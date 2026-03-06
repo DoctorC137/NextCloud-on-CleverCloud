@@ -107,9 +107,12 @@ for i in $(seq 1 24); do
         echo "[OK] ObjectStore prêt après $i tentative(s)."
         break
     fi
-    # Afficher les premiers caractères du body pour diagnostiquer les 503
-    BODY_PREVIEW=$(echo "$BODY" | head -5 | tr '\n' ' ' | cut -c1-300)
-    echo "[INFO] Attente WebDAV... tentative $i/24 (HTTP $HTTP) — $BODY_PREVIEW"
+    # Diagnostiquer : status.php sans auth + body WebDAV
+    STATUS=$(curl -s --max-time 5 "http://localhost:${PORT:-8080}/status.php" 2>/dev/null | cut -c1-200)
+    BODY_PREVIEW=$(echo "$BODY" | head -3 | tr '\n' ' ' | cut -c1-120)
+    echo "[INFO] Attente WebDAV... tentative $i/24 (HTTP $HTTP)"
+    echo "[INFO]   status.php: $STATUS"
+    echo "[INFO]   webdav body: $BODY_PREVIEW"
     sleep 5
 done
 
