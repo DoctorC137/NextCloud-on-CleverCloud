@@ -10,13 +10,30 @@
 # des échecs WebDAV bénins (fichier déjà existant) n'arrêtent le script.
 
 # -----------------------------------------------------------------------------
-# Helper PostgreSQL — retourne "" en cas d'erreur (table absente, etc.)
+# REAL_APP — défini en tout premier (utilisé partout dans ce script)
 # -----------------------------------------------------------------------------
 REAL_APP=$(ls -d /home/bas/app_*/ 2>/dev/null | head -1 | sed 's|/$||')
 if [ -z "$REAL_APP" ]; then
     echo "[ERR] Impossible de localiser le dossier de l'application." && exit 1
 fi
 
+# -----------------------------------------------------------------------------
+# enable_locking — réactive memcache.locking via occ
+# Enregistré comme trap EXIT : s'exécute toujours, même sur exit anticipé.
+# Premier boot : locking était désactivé dans run.sh pour éviter HTTP 423.
+# -----------------------------------------------------------------------------
+enable_locking() {
+    echo "[INFO] Réactivation de memcache.locking dans config.php..."
+    php "$REAL_APP/occ" config:system:set memcache.locking \
+        --value='\OC\Memcache\Redis' --type=string --no-interaction 2>/dev/null \
+        && echo "[OK] memcache.locking réactivé." \
+        || echo "[WARN] Impossible de réactiver memcache.locking via occ."
+}
+trap enable_locking EXIT
+
+# -----------------------------------------------------------------------------
+# Helper PostgreSQL — retourne "" en cas d'erreur (table absente, etc.)
+# -----------------------------------------------------------------------------
 db_query() {
     PGPASSWORD="$POSTGRESQL_ADDON_PASSWORD" psql \
         -h "$POSTGRESQL_ADDON_HOST" \
@@ -52,16 +69,6 @@ NC_PORT="${PORT:-8080}"
 NC_LOCAL="http://localhost:$NC_PORT/remote.php/dav/files/$NEXTCLOUD_ADMIN_USER"
 NC_AUTH="$NEXTCLOUD_ADMIN_USER:$NEXTCLOUD_ADMIN_PASSWORD"
 NC_HOST_HEADER="Host: $NEXTCLOUD_DOMAIN"
-
-# -----------------------------------------------------------------------------
-# Helper : réactive memcache.locking dans config.php via occ
-    echo "[INFO] Réactivation de memcache.locking dans config.php..."
-    php "$REAL_APP/occ" config:system:set memcache.locking \
-        --value='\OC\Memcache\Redis' --type=string --no-interaction 2>/dev/null \
-        && echo "[OK] memcache.locking réactivé." \
-        || echo "[WARN] Impossible de réactiver memcache.locking via occ."
-}
-trap enable_locking EXIT
 
 # -----------------------------------------------------------------------------
 # ÉTAPE 1 — Vérification directe que Cellar répond (HEAD sur le bucket)
