@@ -3,7 +3,6 @@
 # Nextcloud on Clever Cloud — no FS Bucket
 [![Clever Cloud - PaaS](https://img.shields.io/badge/Clever%20Cloud-PaaS-orange)](https://clever-cloud.com)
 [![Nextcloud](https://img.shields.io/badge/Nextcloud-33-0082C9?logo=nextcloud)](https://nextcloud.com)
-[![Branch](https://img.shields.io/badge/branch-poc%2Fno--fsbucket-yellow)](https://github.com/DoctorC137/NextCloud-on-CleverCloud/tree/poc/no-fsbucket)
 
 > **POC branch** — FS Bucket-free architecture. Config is reconstructed from environment variables on every start. Validated: first install + restart with persistent user data. See `main` for the stable FS Bucket-based version.
 
