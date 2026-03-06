@@ -57,8 +57,8 @@ db_set() {
 
 # --- Wait for PostgreSQL -----------------------------------------------------
 # Clever Cloud place un proxy (Pgpool-II) devant PostgreSQL.
-# On valide avec un DDL leger (CREATE+DROP TABLE) plutot que SELECT 1,
-# car SELECT 1 peut passer alors que le proxy n'est pas encore DDL-ready.
+# SELECT 1 peut reussir alors que le proxy n'est pas encore pret pour du DDL.
+# On valide avec un DDL leger pour s'assurer que l'install ne sera pas coupee.
 echo "[INFO] Waiting for PostgreSQL DDL-ready..."
 PG_READY=0
 for i in $(seq 1 40); do
@@ -131,10 +131,11 @@ write_config_php() {
   'trusted_proxies'       => ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'],
   'forwarded_for_headers' => ['HTTP_X_FORWARDED_FOR'],
 
-  // Materia KV — Redis-compatible, TLS required.
+  // Cache local : APCu (in-process, zero reseau).
+  // Cache distribue + locking : Materia KV via Redis-compatible TLS.
   // tls:// prefix in host activates TLS at the PHP stream level,
   // which is compatible with persistent connections (unlike ssl_context).
-  'memcache.local'       => '\\OC\\Memcache\\Redis',
+  'memcache.local'       => '\\OC\\Memcache\\APCu',
   'memcache.distributed' => '\\OC\\Memcache\\Redis',
   'memcache.locking'     => '\\OC\\Memcache\\Redis',
   'redis' => [
@@ -225,11 +226,11 @@ else
     NC_PASSWORD_SALT=$(extract_secret "passwordsalt")
     NC_SECRET=$(extract_secret "secret")
 
-    # Use occ status for the full 4-part version (e.g. 33.0.0.16).
-    # occ maintenance:install only writes a 3-part version to config.php,
-    # which would cause a spurious occ upgrade on every subsequent restart.
+    # Use occ status "version" field for the full 4-part version (e.g. 33.0.0.16).
+    # "versionstring" returns only 3 parts (33.0.0) which causes needsDbUpgrade=true
+    # on every restart. "version" returns the full 4-part string.
     NC_VERSION=$(php "$REAL_APP/occ" status --output=json 2>/dev/null \
-        | grep -oE '"versionstring":"[^"]*"' | cut -d'"' -f4 || true)
+        | grep -oE '"version":"[^"]*"' | cut -d'"' -f4 || true)
     [ -z "$NC_VERSION" ] && NC_VERSION=$(extract_secret "version")
 
     if [ -z "$NC_INSTANCE_ID" ] || [ -z "$NC_PASSWORD_SALT" ] || [ -z "$NC_SECRET" ]; then
@@ -246,6 +247,9 @@ else
     write_config_php "$NC_INSTANCE_ID" "$NC_PASSWORD_SALT" "$NC_SECRET" "$NC_VERSION"
     ensure_s3_bucket
 
+    # occ upgrade necessaire au premier boot : config.php a ete recrit avec la
+    # version 4 chiffres, Nextcloud doit aligner son schema BDD.
+    php "$REAL_APP/occ" upgrade --no-interaction 2>&1 || true
     php "$REAL_APP/occ" db:add-missing-indices --no-interaction 2>/dev/null || true
     php "$REAL_APP/occ" maintenance:repair --include-expensive --no-interaction 2>/dev/null || true
     echo "[OK] First install complete."
