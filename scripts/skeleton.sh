@@ -108,7 +108,7 @@ for i in $(seq 1 24); do
         break
     fi
     # Afficher les premiers caractères du body pour diagnostiquer les 503
-    BODY_PREVIEW=$(echo "$BODY" | head -3 | tr '\n' ' ' | cut -c1-120)
+    BODY_PREVIEW=$(echo "$BODY" | head -5 | tr '\n' ' ' | cut -c1-300)
     echo "[INFO] Attente WebDAV... tentative $i/24 (HTTP $HTTP) — $BODY_PREVIEW"
     sleep 5
 done

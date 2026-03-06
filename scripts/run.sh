@@ -121,10 +121,11 @@ write_config_php() {
   'trusted_proxies'       => ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'],
   'forwarded_for_headers' => ['HTTP_X_FORWARDED_FOR'],
 
-  // Materia KV — Redis-compatible, TLS required.
+  // Cache local : APCu (in-process, zéro réseau — résilient si Redis indisponible).
+  // Cache distribué + locking : Materia KV via Redis-compatible TLS.
   // tls:// prefix in host activates TLS at the PHP stream level,
   // which is compatible with persistent connections (unlike ssl_context).
-  'memcache.local'       => '\\OC\\Memcache\\Redis',
+  'memcache.local'       => '\\OC\\Memcache\\APCu',
   'memcache.distributed' => '\\OC\\Memcache\\Redis',
   'memcache.locking'     => '\\OC\\Memcache\\Redis',
   'redis' => [
