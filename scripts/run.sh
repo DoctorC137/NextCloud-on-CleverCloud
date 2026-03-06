@@ -131,16 +131,14 @@ write_config_php() {
   'trusted_proxies'       => ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'],
   'forwarded_for_headers' => ['HTTP_X_FORWARDED_FOR'],
 
-  // Cache local : APCu (in-process, zero reseau).
-  // Cache distribue : Materia KV via Redis-compatible TLS.
-  // memcache.locking supprime : Materia KV ne supporte pas les Lists
-  // utilises par le locking DAV de Nextcloud — locking assure par PostgreSQL.
   'memcache.local'       => '\\OC\\Memcache\\APCu',
   'memcache.distributed' => '\\OC\\Memcache\\Redis',
+  'memcache.locking'     => '\\OC\\Memcache\\Redis',
   'redis' => [
-    'host'     => 'tls://${REDIS_HOST}',
-    'port'     => ${REDIS_PORT_CLEAN},
-    'password' => '${REDIS_PASSWORD}',
+    'host'       => 'tls://${REDIS_HOST}',
+    'port'       => ${REDIS_PORT_CLEAN},
+    'password'   => '${REDIS_PASSWORD}',
+    'persistent' => true,
   ],
 
   'datadirectory'              => '${REAL_APP}/data',
