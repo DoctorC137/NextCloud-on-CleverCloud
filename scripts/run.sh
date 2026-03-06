@@ -47,13 +47,17 @@ rm -f "$REAL_APP/config/"*.php 2>/dev/null || true
 # -----------------------------------------------------------------------------
 # PHP-FPM tuning
 # -----------------------------------------------------------------------------
-cat > "$REAL_APP/.user.ini" << 'EOF'
+cat > "$REAL_APP/.user.ini" << EOF
 memory_limit = 512M
 output_buffering = 0
 opcache.max_accelerated_files = 20000
 opcache.memory_consumption = 128
 opcache.interned_strings_buffer = 16
 opcache.revalidate_freq = 60
+; Sessions PHP stockées dans Materia KV (protocole Redis, TLS)
+; Nécessaire pour la scalabilité horizontale multi-instances
+session.save_handler = redis
+session.save_path = "tls://${REDIS_HOST}:${REDIS_PORT_CLEAN}?auth=${REDIS_PASSWORD}"
 EOF
 
 # -----------------------------------------------------------------------------
@@ -168,7 +172,7 @@ write_config_php() {
   'trusted_proxies'        => ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'],
   'forwarded_for_headers'  => ['HTTP_X_FORWARDED_FOR'],
 
-  // Cache Redis
+  // Cache Materia KV (compatible Redis, TLS obligatoire)
   'memcache.local'       => '\\OC\\Memcache\\Redis',
   'memcache.distributed' => '\\OC\\Memcache\\Redis',
   'memcache.locking'     => '\\OC\\Memcache\\Redis',
@@ -176,6 +180,11 @@ write_config_php() {
     'host'     => '${REDIS_HOST}',
     'port'     => ${REDIS_PORT_CLEAN},
     'password' => '${REDIS_PASSWORD}',
+    // TLS requis par Materia KV — verify_peer_name=false car le CN peut ne pas matcher le hostname
+    'ssl_context' => [
+      'verify_peer'      => true,
+      'verify_peer_name' => false,
+    ],
   ],
 
   // Données
@@ -278,12 +287,7 @@ else
     NC_INSTANCE_ID=$(extract_secret "instanceid")
     NC_PASSWORD_SALT=$(extract_secret "passwordsalt")
     NC_SECRET=$(extract_secret "secret")
-    # Utiliser occ status pour avoir la version à 4 chiffres (ex: 33.0.0.16)
-    # car config.php généré par occ maintenance:install ne contient que 3 chiffres (ex: 33.0.0)
-    # ce qui provoquerait un occ upgrade inutile à chaque redémarrage
-    NC_VERSION_INSTALLED=$(php "$REAL_APP/occ" status --output=json 2>/dev/null \
-        | grep -oE '"versionstring":"[^"]*"' | cut -d'"' -f4 || true)
-    [ -z "$NC_VERSION_INSTALLED" ] && NC_VERSION_INSTALLED=$(extract_secret "version")
+    NC_VERSION_INSTALLED=$(extract_secret "version")
 
     # Validation stricte : si un secret est vide, on s'arrête avec un message clair
     if [ -z "$NC_INSTANCE_ID" ] || [ -z "$NC_PASSWORD_SALT" ] || [ -z "$NC_SECRET" ]; then

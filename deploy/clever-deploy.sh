@@ -49,8 +49,7 @@ cleanup_on_error() {
     echo ""
     warn "Erreur détectée — nettoyage en cours..."
     [ -n "$CELLAR_ADDON_NAME" ] && clever addon delete "$CELLAR_ADDON_NAME" --yes 2>/dev/null || true
-    [ -n "$FS_ADDON_NAME" ]     && clever addon delete "$FS_ADDON_NAME"     --yes 2>/dev/null || true
-    [ -n "$REDIS_ADDON_NAME" ]  && clever addon delete "$REDIS_ADDON_NAME"  --yes 2>/dev/null || true
+    [ -n "$KV_ADDON_NAME" ]     && clever addon delete "$KV_ADDON_NAME"     --yes 2>/dev/null || true
     [ -n "$PG_ADDON_NAME" ]     && clever addon delete "$PG_ADDON_NAME"     --yes 2>/dev/null || true
     [ -n "$APP_NAME" ]          && clever delete --app "$APP_NAME" --yes 2>/dev/null || true
     git remote remove clever 2>/dev/null || true
@@ -171,24 +170,6 @@ PG_VERSION="${PG_VERSION_CODES[$((PGV - 1))]:-16}"
 info "Version PostgreSQL : $PG_VERSION"
 
 # =============================================================================
-# DIMENSIONNEMENT — Redis
-# =============================================================================
-section "Dimensionnement — Cache Redis"
-
-REDIS_PLANS=(
-    "s_mono   —  1 vCPU, 128 MB  (petite équipe)"
-    "m_mono   —  1 vCPU, 256 MB  (usage standard)"
-    "l_mono   —  1 vCPU, 512 MB  (usage intensif)"
-    "xl_mono  —  1 vCPU, 1 GB    (grande organisation)"
-)
-REDIS_PLAN_CODES=("s_mono" "m_mono" "l_mono" "xl_mono")
-menu "Plan Redis :" 2 "${REDIS_PLANS[@]}"
-read -r REC
-REC="${REC:-2}"
-REDIS_PLAN="${REDIS_PLAN_CODES[$((REC - 1))]:-m_mono}"
-info "Plan Redis : $REDIS_PLAN"
-
-# =============================================================================
 # COMPTE ADMINISTRATEUR
 # =============================================================================
 section "Compte administrateur Nextcloud"
@@ -216,7 +197,7 @@ echo -e "  ${DIM}Application${NC}  ${BOLD}$APP_NAME${NC} — région ${BOLD}$REG
 echo -e "  ${DIM}Domaine     ${NC}  ${BOLD}${NEXTCLOUD_DOMAIN:-cleverapps.io automatique}${NC}"
 echo -e "  ${DIM}PHP         ${NC}  ${BOLD}$PHP_PLAN${NC}"
 echo -e "  ${DIM}PostgreSQL  ${NC}  ${BOLD}$PG_PLAN${NC} — version ${BOLD}$PG_VERSION${NC}"
-echo -e "  ${DIM}Redis       ${NC}  ${BOLD}$REDIS_PLAN${NC}"
+echo -e "  ${DIM}Cache/KV    ${NC}  ${BOLD}Materia KV${NC} (serverless, remplace Redis)"
 echo -e "  ${DIM}Admin       ${NC}  ${BOLD}$NEXTCLOUD_ADMIN_USER${NC}"
 echo ""
 ask "Confirmer le déploiement ? (o/N) :"
@@ -253,21 +234,22 @@ clever addon create postgresql-addon --plan "$PG_PLAN" --region "$REGION" \
     $ORG_FLAG --link "$ALIAS" "$PG_ADDON_NAME" --yes >/dev/null 2>&1
 success "PostgreSQL créé ($PG_PLAN, version $PG_VERSION)"
 
-# Redis
-REDIS_ADDON_NAME="${APP_NAME}-redis"
-REDIS_OUT=$(clever addon create redis-addon --plan "$REDIS_PLAN" --region "$REGION" \
-    $ORG_FLAG --link "$ALIAS" "$REDIS_ADDON_NAME" --yes 2>&1)
-REDIS_ADDON_ID=$(echo "$REDIS_OUT" | grep "^ID:" | awk '{print $2}' | head -n1)
-[ -z "$REDIS_ADDON_ID" ] && error "Impossible d'extraire l'ID Redis."
-REDIS_ENV=$(clever addon env "$REDIS_ADDON_ID" $ORG_FLAG --format shell 2>&1)
-REDIS_HOST_VAL=$(extract_env "REDIS_HOST"     "$REDIS_ENV")
-REDIS_PORT_VAL=$(extract_env "REDIS_PORT"     "$REDIS_ENV" | tr -dc '0-9')
-REDIS_PASS_VAL=$(extract_env "REDIS_PASSWORD" "$REDIS_ENV")
-[ -z "$REDIS_HOST_VAL" ] && error "REDIS_HOST introuvable."
-clever env set --alias "$ALIAS" REDIS_HOST     "$REDIS_HOST_VAL"
-clever env set --alias "$ALIAS" REDIS_PORT     "$REDIS_PORT_VAL"
-clever env set --alias "$ALIAS" REDIS_PASSWORD "$REDIS_PASS_VAL"
-success "Redis créé ($REDIS_PLAN)"
+# Materia KV — remplace Redis (même protocole RESP, serverless, TLS natif)
+KV_ADDON_NAME="${APP_NAME}-kv"
+KV_OUT=$(clever addon create kv --region "$REGION" \
+    $ORG_FLAG --link "$ALIAS" "$KV_ADDON_NAME" --yes 2>&1)
+KV_ADDON_ID=$(echo "$KV_OUT" | grep "^ID:" | awk '{print $2}' | head -n1)
+[ -z "$KV_ADDON_ID" ] && error "Impossible d'extraire l'ID Materia KV."
+KV_ENV=$(clever addon env "$KV_ADDON_ID" $ORG_FLAG --format shell 2>&1)
+KV_HOST=$(extract_env "KV_HOST"  "$KV_ENV")
+KV_PORT=$(extract_env "KV_PORT"  "$KV_ENV" | tr -dc '0-9')
+KV_TOKEN=$(extract_env "KV_TOKEN" "$KV_ENV")
+[ -z "$KV_HOST" ] && error "KV_HOST introuvable."
+# On réutilise les variables REDIS_* pour ne pas modifier run.sh
+clever env set --alias "$ALIAS" REDIS_HOST     "$KV_HOST"
+clever env set --alias "$ALIAS" REDIS_PORT     "$KV_PORT"
+clever env set --alias "$ALIAS" REDIS_PASSWORD "$KV_TOKEN"
+success "Materia KV créé (serverless, remplace Redis)"
 
 # Cellar S3
 CELLAR_ADDON_NAME="${APP_NAME}-cellar"

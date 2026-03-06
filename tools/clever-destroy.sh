@@ -14,7 +14,7 @@
 # ║  Ce script supprime DÉFINITIVEMENT et IRRÉVOCABLEMENT :         ║
 # ║    • L'application Clever Cloud et tous ses addons              ║
 # ║    • Le bucket Cellar S3 et TOUS les fichiers uploadés          ║
-# ║    • Le FS Bucket et toute la configuration persistante         ║
+# ║    • Le Materia KV (cache et sessions)                          ║
 # ║    • La base de données PostgreSQL et toutes ses données        ║
 # ║                                                                  ║
 # ║  AUCUNE RÉCUPÉRATION POSSIBLE après confirmation.               ║
@@ -52,7 +52,7 @@ echo ""
 echo -e "${RED}  Seront supprimés DÉFINITIVEMENT :${NC}"
 echo -e "${RED}    • Application  : $APP${NC}"
 echo -e "${RED}    • PostgreSQL   : ${APP}-pg  (toutes les données)${NC}"
-echo -e "${RED}    • Redis        : ${APP}-redis${NC}"
+echo -e "${RED}    • Materia KV   : ${APP}-kv  (cache, sessions)${NC}"
 echo -e "${RED}    • Cellar S3    : ${APP}-cellar  (TOUS les fichiers uploadés)${NC}"
 echo -e "${RED}    • Local        : remote clever + .clever.json${NC}"
 echo ""
@@ -100,7 +100,7 @@ else
 fi
 
 clever addon delete "${APP}-cellar"   --yes 2>/dev/null && success "${APP}-cellar supprimé."   || warn "${APP}-cellar introuvable."
-clever addon delete "${APP}-redis"    --yes 2>/dev/null && success "${APP}-redis supprimé."    || warn "${APP}-redis introuvable."
+clever addon delete "${APP}-kv"       --yes 2>/dev/null && success "${APP}-kv supprimé."       || warn "${APP}-kv introuvable."
 clever addon delete "${APP}-pg"       --yes 2>/dev/null && success "${APP}-pg supprimé."       || warn "${APP}-pg introuvable."
 clever delete --app "$APP"            --yes 2>/dev/null && success "$APP supprimé."            || warn "$APP introuvable."
 git remote remove clever 2>/dev/null  && success "Remote clever supprimé."                     || warn "Remote clever introuvable."
