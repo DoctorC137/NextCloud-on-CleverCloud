@@ -131,6 +131,8 @@ write_config_php() {
   'trusted_proxies'       => ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'],
   'forwarded_for_headers' => ['HTTP_X_FORWARDED_FOR'],
 
+  // Cache local : APCu (in-process, zero reseau).
+  // Cache distribue + locking : Materia KV via Redis-compatible TLS.
   'memcache.local'       => '\\OC\\Memcache\\APCu',
   'memcache.distributed' => '\\OC\\Memcache\\Redis',
   'memcache.locking'     => '\\OC\\Memcache\\Redis',
@@ -255,5 +257,12 @@ fi
 # --- Idempotent settings (applied on every boot) -----------------------------
 php "$REAL_APP/occ" config:app:set core backgroundjobs_mode --value=webcron --no-interaction 2>/dev/null || true
 php "$REAL_APP/occ" maintenance:mode --off --no-interaction 2>/dev/null || true
+
+# --- Purge DAV locks orphelins -----------------------------------------------
+# Materia KV conserve les locks entre redemarrages — purge a chaque boot
+# pour eviter les HTTP 423 sur WebDAV.
+php "$REAL_APP/occ" dav:cleanup-chunks --no-interaction 2>/dev/null || true
+db_query "DELETE FROM oc_file_locks;" 2>/dev/null || true
+echo "[OK] DAV locks purged."
 
 echo "[OK] Nextcloud ready: https://$NEXTCLOUD_DOMAIN"
