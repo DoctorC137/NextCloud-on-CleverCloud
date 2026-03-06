@@ -259,10 +259,16 @@ php "$REAL_APP/occ" config:app:set core backgroundjobs_mode --value=webcron --no
 php "$REAL_APP/occ" maintenance:mode --off --no-interaction 2>/dev/null || true
 
 # --- Purge DAV locks orphelins -----------------------------------------------
-# Materia KV conserve les locks entre redemarrages — purge a chaque boot
-# pour eviter les HTTP 423 sur WebDAV.
+# Materia KV conserve les locks entre redemarrages (contrairement a Redis
+# classique ephemere). Les locks Redis ne sont PAS dans oc_file_locks (PG) —
+# DELETE 0 confirme que la table PG est vide. La purge doit cibler Materia KV.
+# FLUSHDB est sur au boot : Apache n'a pas encore demarre, aucune session active.
 php "$REAL_APP/occ" dav:cleanup-chunks --no-interaction 2>/dev/null || true
-db_query "DELETE FROM oc_file_locks;" 2>/dev/null || true
+echo "[INFO] Purge des locks orphelins dans Materia KV (FLUSHDB)..."
+redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT_CLEAN" --tls \
+    -a "$REDIS_PASSWORD" --no-auth-warning FLUSHDB \
+    && echo "[OK] Materia KV purgé." \
+    || echo "[WARN] FLUSHDB échoué (non bloquant)."
 echo "[OK] DAV locks purged."
 
 echo "[OK] Nextcloud ready: https://$NEXTCLOUD_DOMAIN"
