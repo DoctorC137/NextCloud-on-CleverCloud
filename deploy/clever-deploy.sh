@@ -229,6 +229,16 @@ read -r CONFIRM
 section "Création de l'application PHP"
 clever create --type php --region "$REGION" $ORG_FLAG --alias "$ALIAS" "$APP_NAME"
 
+# Apply the chosen instance flavor immediately after creation
+APP_ID=$(python3 -c "import json; apps=json.load(open('.clever.json'))['apps']; print(next(a['app_id'] for a in apps if a['alias']=='$ALIAS'))" 2>/dev/null)
+if [ -n "$APP_ID" ] && [ -n "$ORG_INPUT" ]; then
+    clever curl -s -X PUT \
+        -H "Content-Type: application/json" \
+        -d "{\"minInstances\":1,\"maxInstances\":1,\"minFlavor\":\"$PHP_PLAN\",\"maxFlavor\":\"$PHP_PLAN\",\"homogeneous\":false}" \
+        "https://api.clever-cloud.com/v2/organisations/${ORG_INPUT}/applications/${APP_ID}" >/dev/null 2>&1
+    success "Instance flavor: $PHP_PLAN"
+fi
+
 if [ "$DOMAIN_AUTO" = "true" ]; then
     NEXTCLOUD_DOMAIN=$(clever domain --alias "$ALIAS" 2>/dev/null \
         | grep 'cleverapps.io' | awk '{print $1}' | tr -d '/' | head -n1)
