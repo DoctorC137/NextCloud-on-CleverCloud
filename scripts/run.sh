@@ -189,6 +189,9 @@ write_config_php() {
   // Divers
   'default_phone_region'    => 'FR',
   'maintenance_window_start' => 1,
+
+  // Désactive l'updater web — les mises à jour passent par install.sh + clever deploy.
+  'upgrade.disable-web' => true,
 ];
 EOF
     echo "[OK] config.php généré."
@@ -246,7 +249,7 @@ if [ -n "$NC_INSTANCE_ID" ] && [ -n "$NC_PASSWORD_SALT" ] && [ -n "$NC_SECRET" ]
 
     # Mise à jour de NC_VERSION en BDD si occ upgrade a appliqué une migration
     NC_VERSION_NEW=$(php "$REAL_APP/occ" status --output=json 2>/dev/null \
-        | grep -oE '"versionstring":"[^"]*"' | cut -d'"' -f4 || true)
+        | grep -oE '"version":"[^"]*"' | cut -d'"' -f4 || true)
     if [ -n "$NC_VERSION_NEW" ] && [ "$NC_VERSION_NEW" != "$NC_VERSION_CURRENT" ]; then
         echo "[INFO] Version mise à jour : $NC_VERSION_CURRENT → $NC_VERSION_NEW"
         db_set "NC_VERSION" "$NC_VERSION_NEW"
@@ -278,11 +281,11 @@ else
     NC_INSTANCE_ID=$(extract_secret "instanceid")
     NC_PASSWORD_SALT=$(extract_secret "passwordsalt")
     NC_SECRET=$(extract_secret "secret")
-    # Utiliser occ status pour avoir la version à 4 chiffres (ex: 33.0.0.16)
-    # car config.php généré par occ maintenance:install ne contient que 3 chiffres (ex: 33.0.0)
-    # ce qui provoquerait un occ upgrade inutile à chaque redémarrage
+    # Utiliser le champ "version" (4 chiffres ex: 33.0.0.16) et non "versionstring"
+    # (3 chiffres ex: 33.0.0) — un écart entre config.php et les fichiers provoquerait
+    # un occ upgrade inutile à chaque redémarrage.
     NC_VERSION_INSTALLED=$(php "$REAL_APP/occ" status --output=json 2>/dev/null \
-        | grep -oE '"versionstring":"[^"]*"' | cut -d'"' -f4 || true)
+        | grep -oE '"version":"[^"]*"' | cut -d'"' -f4 || true)
     [ -z "$NC_VERSION_INSTALLED" ] && NC_VERSION_INSTALLED=$(extract_secret "version")
 
     # Validation stricte : si un secret est vide, on s'arrête avec un message clair
@@ -310,7 +313,7 @@ else
 
     # Update stored version after upgrade
     NC_VERSION_FINAL=$(php "$REAL_APP/occ" status --output=json 2>/dev/null \
-        | grep -oE '"versionstring":"[^"]*"' | cut -d'"' -f4 || true)
+        | grep -oE '"version":"[^"]*"' | cut -d'"' -f4 || true)
     [ -n "$NC_VERSION_FINAL" ] && db_set "NC_VERSION" "$NC_VERSION_FINAL"
 
     echo "[OK] Installation Nextcloud terminée."

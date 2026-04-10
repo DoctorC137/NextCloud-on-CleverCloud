@@ -81,9 +81,18 @@ Nextcloud blocks version skips across majors. `install.sh` compares the installe
 
 ### Prerequisites
 
+Install clever-tools and log in to Clever Cloud:
+
 ```bash
 npm install -g clever-tools
 clever login
+```
+
+Then fork this repo and clone it locally:
+
+```bash
+git clone git@github.com:<you>/nextcloud-on-clevercloud.git
+cd nextcloud-on-clevercloud
 ```
 
 ### Automated (recommended)
