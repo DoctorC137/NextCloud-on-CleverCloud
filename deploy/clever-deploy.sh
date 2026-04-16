@@ -212,36 +212,20 @@ info "Plan Redis : $REDIS_PLAN"
 # RÉSEAU — Network Groups WireGuard (optionnel)
 # =============================================================================
 section "Réseau — Network Groups WireGuard (optionnel)"
-echo -e "  ${DIM}Crée des tunnels chiffrés WireGuard entre l'app et ses services backend.${NC}"
+echo -e "  ${DIM}Crée deux tunnels WireGuard distincts : app↔PostgreSQL et app↔Redis.${NC}"
+echo -e "  ${DIM}PostgreSQL et Redis ne peuvent pas se joindre (least-privilege).${NC}"
 echo -e "  ${DIM}Les hostnames publics restent actifs — aucun impact sur l'installation.${NC}"
 echo ""
-echo -e "  ${CYAN}?  Activer les Network Groups ?${NC}"
-echo -e "      ${DIM}0) Non — pas de réseau privé${NC}"
-echo -e "      ${DIM}1) 1 NGP — App + PostgreSQL + Redis dans le même réseau${NC}"
-echo -e "            ${DIM}(simple, mais PG et Redis peuvent se voir mutuellement)${NC}"
-echo -e "      ${BOLD}${GREEN}2) 2 NGPs — App+PostgreSQL et App+Redis séparés ★ conseillé${NC}"
-echo -e "            ${DIM}(least-privilege : PG et Redis ne peuvent pas se joindre)${NC}"
-echo -ne "${BOLD}      → ${NC}"
-read -r NGP_MODE_INPUT
-NGP_MODE="${NGP_MODE_INPUT:-2}"
-# Valider l'entrée
-[[ "$NGP_MODE" =~ ^[012]$ ]] || NGP_MODE=2
-
+ask "Activer les Network Groups ? (o/N) :"
+read -r ENABLE_NGP_INPUT
 ENABLE_NGP=false
-NGP_MODE_LABEL="désactivé"
 NGP_NAME_DB=""
 NGP_NAME_CACHE=""
-if [ "$NGP_MODE" = "1" ]; then
-    ENABLE_NGP=true
-    NGP_NAME_DB="${APP_NAME}-network"
-    NGP_MODE_LABEL="1 NGP (app + PG + Redis)"
-    info "1 Network Group : '${NGP_NAME_DB}'."
-elif [ "$NGP_MODE" = "2" ]; then
+if [[ "$ENABLE_NGP_INPUT" =~ ^[oOyY]$ ]]; then
     ENABLE_NGP=true
     NGP_NAME_DB="${APP_NAME}-db-network"
     NGP_NAME_CACHE="${APP_NAME}-cache-network"
-    NGP_MODE_LABEL="2 NGPs (app+PG isolé de Redis)"
-    info "2 Network Groups : '${NGP_NAME_DB}' et '${NGP_NAME_CACHE}'."
+    info "2 Network Groups activés : '${NGP_NAME_DB}' et '${NGP_NAME_CACHE}'."
 else
     info "Network Groups désactivés."
 fi
@@ -275,10 +259,8 @@ echo -e "  ${DIM}Domaine    ${NC}   ${BOLD}${NEXTCLOUD_DOMAIN:-cleverapps.io aut
 echo -e "  ${DIM}PHP        ${NC}   ${BOLD}$PHP_PLAN${NC}"
 echo -e "  ${DIM}PostgreSQL ${NC}   ${BOLD}$PG_PLAN${NC} — version ${BOLD}$PG_VERSION${NC}"
 echo -e "  ${DIM}Redis      ${NC}   ${BOLD}$REDIS_PLAN${NC}"
-if [ "$NGP_MODE" = "2" ]; then
-    echo -e "  ${DIM}Network Groups${NC} ${BOLD}${GREEN}2 NGPs${NC} — least-privilege (PG et Redis isolés l'un de l'autre)"
-elif [ "$NGP_MODE" = "1" ]; then
-    echo -e "  ${DIM}Network Groups${NC} ${BOLD}${GREEN}1 NGP${NC} — tunnel WireGuard privé (full-mesh)"
+if [ "$ENABLE_NGP" = "true" ]; then
+    echo -e "  ${DIM}Network Groups${NC} ${BOLD}${GREEN}activés${NC} — PG et Redis isolés l'un de l'autre"
 else
     echo -e "  ${DIM}Network Groups${NC} ${DIM}désactivés${NC}"
 fi
@@ -403,38 +385,22 @@ if [ "$ENABLE_NGP" = "true" ]; then
     [ -z "$REDIS_REAL_ID" ] && warn "realId Redis introuvable — Redis non lié au NGP." && NGP_OK=false
 
     if [ "$NGP_OK" = "true" ]; then
+        # NGP-db : app + PostgreSQL uniquement
+        clever ng create "$NGP_NAME_DB" $ORG_FLAG 2>&1 | grep -E "✓|ERROR" || true
+        clever ng link "$APP_ID"     "$NGP_NAME_DB" $ORG_FLAG 2>&1 | grep -E "✓|Member" || true
+        clever ng link "$PG_REAL_ID" "$NGP_NAME_DB" $ORG_FLAG 2>&1 | grep -E "✓|Member" || true
+        success "NGP db '${NGP_NAME_DB}' créé — app + PostgreSQL"
 
-        if [ "$NGP_MODE" = "1" ]; then
-            # ── Mode 1 : 1 NGP full-mesh ──────────────────────────────────────
-            clever ng create "$NGP_NAME_DB" $ORG_FLAG 2>&1 | grep -E "✓|ERROR" || true
-            clever ng link "$APP_ID"       "$NGP_NAME_DB" $ORG_FLAG 2>&1 | grep -E "✓|Member" || true
-            clever ng link "$PG_REAL_ID"   "$NGP_NAME_DB" $ORG_FLAG 2>&1 | grep -E "✓|Member" || true
-            clever ng link "$REDIS_REAL_ID" "$NGP_NAME_DB" $ORG_FLAG 2>&1 | grep -E "✓|Member" || true
+        # NGP-cache : app + Redis uniquement (PG ne peut pas joindre Redis)
+        clever ng create "$NGP_NAME_CACHE" $ORG_FLAG 2>&1 | grep -E "✓|ERROR" || true
+        clever ng link "$APP_ID"        "$NGP_NAME_CACHE" $ORG_FLAG 2>&1 | grep -E "✓|Member" || true
+        clever ng link "$REDIS_REAL_ID" "$NGP_NAME_CACHE" $ORG_FLAG 2>&1 | grep -E "✓|Member" || true
+        success "NGP cache '${NGP_NAME_CACHE}' créé — app + Redis"
 
-            clever env set --alias "$ALIAS" CC_NGP_DB_NAME "$NGP_NAME_DB"
+        clever env set --alias "$ALIAS" CC_NGP_DB_NAME    "$NGP_NAME_DB"
+        clever env set --alias "$ALIAS" CC_NGP_CACHE_NAME "$NGP_NAME_CACHE"
 
-            success "Network Group '$NGP_NAME_DB' créé — 3 membres : app + PostgreSQL + Redis"
-
-        elif [ "$NGP_MODE" = "2" ]; then
-            # ── Mode 2 : 2 NGPs least-privilege ───────────────────────────────
-            # NGP-db : app + PostgreSQL uniquement
-            clever ng create "$NGP_NAME_DB" $ORG_FLAG 2>&1 | grep -E "✓|ERROR" || true
-            clever ng link "$APP_ID"     "$NGP_NAME_DB" $ORG_FLAG 2>&1 | grep -E "✓|Member" || true
-            clever ng link "$PG_REAL_ID" "$NGP_NAME_DB" $ORG_FLAG 2>&1 | grep -E "✓|Member" || true
-            success "NGP db '${NGP_NAME_DB}' créé — app + PostgreSQL"
-
-            # NGP-cache : app + Redis uniquement (PG ne voit pas Redis)
-            clever ng create "$NGP_NAME_CACHE" $ORG_FLAG 2>&1 | grep -E "✓|ERROR" || true
-            clever ng link "$APP_ID"       "$NGP_NAME_CACHE" $ORG_FLAG 2>&1 | grep -E "✓|Member" || true
-            clever ng link "$REDIS_REAL_ID" "$NGP_NAME_CACHE" $ORG_FLAG 2>&1 | grep -E "✓|Member" || true
-            success "NGP cache '${NGP_NAME_CACHE}' créé — app + Redis"
-
-            clever env set --alias "$ALIAS" CC_NGP_DB_NAME    "$NGP_NAME_DB"
-            clever env set --alias "$ALIAS" CC_NGP_CACHE_NAME "$NGP_NAME_CACHE"
-
-            echo -e "  ${DIM}PostgreSQL et Redis sont dans des réseaux distincts — pas de communication possible entre eux${NC}"
-        fi
-
+        echo -e "  ${DIM}PostgreSQL et Redis sont dans des réseaux distincts — pas de communication possible entre eux${NC}"
         echo -e "  ${DIM}Tunnels WireGuard disponibles via DNS privés (*.cc-ng.cloud)${NC}"
         echo -e "  ${DIM}Les hostnames publics restent actifs — aucun impact sur le démarrage${NC}"
     else
@@ -470,11 +436,9 @@ echo ""
 echo -e "  ${DIM}URL    ${NC}  ${BOLD}${GREEN}https://$NEXTCLOUD_DOMAIN${NC}"
 echo -e "  ${DIM}Admin  ${NC}  ${BOLD}$NEXTCLOUD_ADMIN_USER${NC}"
 echo -e "  ${DIM}Logs   ${NC}  clever logs --alias $ALIAS"
-if [ "$NGP_MODE" = "2" ]; then
+if [ "$ENABLE_NGP" = "true" ]; then
     echo -e "  ${DIM}NGP db   ${NC}  clever ng get $NGP_NAME_DB $ORG_FLAG"
     echo -e "  ${DIM}NGP cache${NC}  clever ng get $NGP_NAME_CACHE $ORG_FLAG"
-elif [ "$NGP_MODE" = "1" ]; then
-    echo -e "  ${DIM}NGP    ${NC}  clever ng get $NGP_NAME_DB $ORG_FLAG"
 fi
 echo ""
 warn "Premier démarrage : 2 à 5 minutes (installation Nextcloud)."
