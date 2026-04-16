@@ -42,14 +42,32 @@ extract_env() {
         | tr -d '"' | tr -d "'" | tr -d ' ' | tr -d $'\r' | tr -d ';'
 }
 
+# Récupère le realId d'un addon (format postgresql_xxx / redis_xxx)
+# Nécessaire pour clever ng link — différent du addon_id (format addon_xxx)
+get_real_id() {
+    local addon_id="$1"
+    local api_base
+    if [ -n "$ORG_INPUT" ]; then
+        api_base="https://api.clever-cloud.com/v2/organisations/${ORG_INPUT}/addons"
+    else
+        api_base="https://api.clever-cloud.com/v2/self/addons"
+    fi
+    clever curl "${api_base}/${addon_id}" 2>/dev/null | tail -1 \
+        | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('realId',''))" 2>/dev/null \
+        || true
+}
+
 # -----------------------------------------------------------------------------
 # Nettoyage automatique en cas d'erreur
 # -----------------------------------------------------------------------------
 cleanup_on_error() {
     echo ""
     warn "Erreur détectée — nettoyage en cours..."
+    # Network Group en premier (avant les addons)
+    if [ -n "$NGP_NAME" ] && [ "$ENABLE_NGP" = "true" ]; then
+        echo "y" | clever ng delete "$NGP_NAME" $ORG_FLAG 2>/dev/null || true
+    fi
     [ -n "$CELLAR_ADDON_NAME" ] && clever addon delete "$CELLAR_ADDON_NAME" --yes 2>/dev/null || true
-    [ -n "$FS_ADDON_NAME" ]     && clever addon delete "$FS_ADDON_NAME"     --yes 2>/dev/null || true
     [ -n "$REDIS_ADDON_NAME" ]  && clever addon delete "$REDIS_ADDON_NAME"  --yes 2>/dev/null || true
     [ -n "$PG_ADDON_NAME" ]     && clever addon delete "$PG_ADDON_NAME"     --yes 2>/dev/null || true
     [ -n "$APP_NAME" ]          && clever delete --app "$APP_NAME" --yes 2>/dev/null || true
@@ -69,9 +87,10 @@ echo -e "${BOLD}${BLUE}╚══════════════════
 echo ""
 
 section "Vérification des prérequis"
-command -v clever >/dev/null 2>&1 || error "clever-tools non installé : npm install -g clever-tools"
-command -v git    >/dev/null 2>&1 || error "git non installé."
-clever profile >/dev/null 2>&1    || error "Non connecté. Lancez : clever login"
+command -v clever  >/dev/null 2>&1 || error "clever-tools non installé : npm install -g clever-tools"
+command -v git     >/dev/null 2>&1 || error "git non installé."
+command -v python3 >/dev/null 2>&1 || error "python3 non installé."
+clever profile >/dev/null 2>&1     || error "Non connecté. Lancez : clever login"
 git rev-parse --git-dir >/dev/null 2>&1 || error "Lancez ce script depuis la racine du repo git."
 success "Prérequis OK."
 
@@ -189,6 +208,26 @@ REDIS_PLAN="${REDIS_PLAN_CODES[$((REC - 1))]:-m_mono}"
 info "Plan Redis : $REDIS_PLAN"
 
 # =============================================================================
+# RÉSEAU — Network Group (optionnel)
+# =============================================================================
+section "Réseau — Network Group WireGuard (optionnel)"
+echo -e "  ${DIM}Crée un tunnel chiffré WireGuard entre l'app, PostgreSQL et Redis.${NC}"
+echo -e "  ${DIM}Les ressources rejoignent un réseau privé isolé (10.x.x.x/16).${NC}"
+echo -e "  ${DIM}Les hostnames publics restent actifs — aucun impact sur l'installation.${NC}"
+echo ""
+ask "Activer le Network Group ? (o/N) :"
+read -r ENABLE_NGP_INPUT
+ENABLE_NGP=false
+[[ "$ENABLE_NGP_INPUT" =~ ^[oOyY]$ ]] && ENABLE_NGP=true
+NGP_NAME=""
+if [ "$ENABLE_NGP" = "true" ]; then
+    NGP_NAME="${APP_NAME}-network"
+    info "Network Group activé — sera créé sous le nom '${NGP_NAME}'."
+else
+    info "Network Group désactivé."
+fi
+
+# =============================================================================
 # COMPTE ADMINISTRATEUR
 # =============================================================================
 section "Compte administrateur Nextcloud"
@@ -212,12 +251,17 @@ echo ""
 # RÉSUMÉ
 # =============================================================================
 section "Résumé"
-echo -e "  ${DIM}Application${NC}  ${BOLD}$APP_NAME${NC} — région ${BOLD}$REGION${NC}"
-echo -e "  ${DIM}Domaine     ${NC}  ${BOLD}${NEXTCLOUD_DOMAIN:-cleverapps.io automatique}${NC}"
-echo -e "  ${DIM}PHP         ${NC}  ${BOLD}$PHP_PLAN${NC}"
-echo -e "  ${DIM}PostgreSQL  ${NC}  ${BOLD}$PG_PLAN${NC} — version ${BOLD}$PG_VERSION${NC}"
-echo -e "  ${DIM}Redis       ${NC}  ${BOLD}$REDIS_PLAN${NC}"
-echo -e "  ${DIM}Admin       ${NC}  ${BOLD}$NEXTCLOUD_ADMIN_USER${NC}"
+echo -e "  ${DIM}Application${NC}   ${BOLD}$APP_NAME${NC} — région ${BOLD}$REGION${NC}"
+echo -e "  ${DIM}Domaine    ${NC}   ${BOLD}${NEXTCLOUD_DOMAIN:-cleverapps.io automatique}${NC}"
+echo -e "  ${DIM}PHP        ${NC}   ${BOLD}$PHP_PLAN${NC}"
+echo -e "  ${DIM}PostgreSQL ${NC}   ${BOLD}$PG_PLAN${NC} — version ${BOLD}$PG_VERSION${NC}"
+echo -e "  ${DIM}Redis      ${NC}   ${BOLD}$REDIS_PLAN${NC}"
+if [ "$ENABLE_NGP" = "true" ]; then
+    echo -e "  ${DIM}Network Group${NC} ${BOLD}${GREEN}activé${NC} — tunnel WireGuard privé"
+else
+    echo -e "  ${DIM}Network Group${NC} ${DIM}désactivé${NC}"
+fi
+echo -e "  ${DIM}Admin      ${NC}   ${BOLD}$NEXTCLOUD_ADMIN_USER${NC}"
 echo ""
 ask "Confirmer le déploiement ? (o/N) :"
 read -r CONFIRM
@@ -229,8 +273,10 @@ read -r CONFIRM
 section "Création de l'application PHP"
 clever create --type php --region "$REGION" $ORG_FLAG --alias "$ALIAS" "$APP_NAME"
 
-# Apply instance sizing: runtime S→chosen plan (vertical scaling), build M (separateBuild)
+# Récupère l'APP_ID depuis .clever.json (nécessaire pour le sizing et le NGP)
 APP_ID=$(python3 -c "import json; apps=json.load(open('.clever.json'))['apps']; print(next(a['app_id'] for a in apps if a['alias']=='$ALIAS'))" 2>/dev/null)
+
+# Apply instance sizing: runtime S→chosen plan (vertical scaling), build M (separateBuild)
 if [ -n "$APP_ID" ] && [ -n "$ORG_INPUT" ]; then
     clever curl -s -X PUT \
         -H "Content-Type: application/json" \
@@ -257,10 +303,12 @@ success "Application PHP créée — domaine : $NEXTCLOUD_DOMAIN"
 section "Création des addons"
 
 # PostgreSQL
+# On capture la sortie pour extraire l'ID (nécessaire pour le Network Group)
 PG_ADDON_NAME="${APP_NAME}-pg"
-clever addon create postgresql-addon --plan "$PG_PLAN" --region "$REGION" \
+PG_OUT=$(clever addon create postgresql-addon --plan "$PG_PLAN" --region "$REGION" \
     --addon-version "$PG_VERSION" \
-    $ORG_FLAG --link "$ALIAS" "$PG_ADDON_NAME" --yes >/dev/null 2>&1
+    $ORG_FLAG --link "$ALIAS" "$PG_ADDON_NAME" --yes 2>&1)
+PG_ADDON_ID=$(echo "$PG_OUT" | grep "^ID:" | awk '{print $2}' | head -n1)
 success "PostgreSQL créé ($PG_PLAN, version $PG_VERSION)"
 
 # Redis
@@ -312,6 +360,51 @@ if [ "$DOMAIN_AUTO" = "false" ] && [ -n "$NEXTCLOUD_DOMAIN" ]; then
 fi
 
 # =============================================================================
+# NETWORK GROUP
+# =============================================================================
+if [ "$ENABLE_NGP" = "true" ]; then
+    section "Création du Network Group"
+
+    # Activer la feature beta ng (idempotent)
+    clever features enable ng >/dev/null 2>&1 || true
+
+    # Créer le Network Group
+    clever ng create "$NGP_NAME" $ORG_FLAG 2>&1 | grep -v "^$" || true
+
+    # Récupérer les realIds des addons.
+    # clever ng link attend le format realId (postgresql_xxx / redis_xxx),
+    # pas le addon_id (addon_xxx) renvoyé par clever addon create.
+    PG_REAL_ID=""
+    REDIS_REAL_ID=""
+    if [ -n "$PG_ADDON_ID" ]; then
+        PG_REAL_ID=$(get_real_id "$PG_ADDON_ID")
+    fi
+    if [ -n "$REDIS_ADDON_ID" ]; then
+        REDIS_REAL_ID=$(get_real_id "$REDIS_ADDON_ID")
+    fi
+
+    NGP_OK=true
+    [ -z "$APP_ID" ]       && warn "APP_ID introuvable — app non liée au NGP." && NGP_OK=false
+    [ -z "$PG_REAL_ID" ]   && warn "realId PostgreSQL introuvable — PG non lié au NGP." && NGP_OK=false
+    [ -z "$REDIS_REAL_ID" ] && warn "realId Redis introuvable — Redis non lié au NGP." && NGP_OK=false
+
+    if [ "$NGP_OK" = "true" ]; then
+        clever ng link "$APP_ID"       "$NGP_NAME" $ORG_FLAG 2>&1 | grep -E "✓|Member" || true
+        clever ng link "$PG_REAL_ID"   "$NGP_NAME" $ORG_FLAG 2>&1 | grep -E "✓|Member" || true
+        clever ng link "$REDIS_REAL_ID" "$NGP_NAME" $ORG_FLAG 2>&1 | grep -E "✓|Member" || true
+
+        # Stocker le nom du NGP comme env var — utilisé par clever-destroy.sh
+        clever env set --alias "$ALIAS" CC_NGP_NAME "$NGP_NAME"
+
+        success "Network Group '$NGP_NAME' créé — 3 membres : app + PostgreSQL + Redis"
+        echo -e "  ${DIM}Tunnel WireGuard disponible via DNS privés (*.cc-ng.cloud)${NC}"
+        echo -e "  ${DIM}Les hostnames publics restent actifs — aucun impact sur le démarrage${NC}"
+    else
+        warn "Network Group partiellement configuré — certains membres n'ont pas pu être liés."
+    fi
+fi
+
+# =============================================================================
 # DÉPLOIEMENT
 # =============================================================================
 section "Déploiement"
@@ -339,6 +432,9 @@ echo ""
 echo -e "  ${DIM}URL    ${NC}  ${BOLD}${GREEN}https://$NEXTCLOUD_DOMAIN${NC}"
 echo -e "  ${DIM}Admin  ${NC}  ${BOLD}$NEXTCLOUD_ADMIN_USER${NC}"
 echo -e "  ${DIM}Logs   ${NC}  clever logs --alias $ALIAS"
+if [ "$ENABLE_NGP" = "true" ]; then
+    echo -e "  ${DIM}NGP    ${NC}  clever ng get $NGP_NAME $ORG_FLAG"
+fi
 echo ""
 warn "Premier démarrage : 2 à 5 minutes (installation Nextcloud)."
 echo ""

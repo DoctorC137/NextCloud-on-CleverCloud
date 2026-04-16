@@ -12,9 +12,9 @@
 # ║   ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝╚═╝  ╚═══╝ ╚═════╝   ║
 # ╠══════════════════════════════════════════════════════════════════╣
 # ║  Ce script supprime DÉFINITIVEMENT et IRRÉVOCABLEMENT :         ║
+# ║    • Le Network Group WireGuard (si activé)                     ║
 # ║    • L'application Clever Cloud et tous ses addons              ║
 # ║    • Le bucket Cellar S3 et TOUS les fichiers uploadés          ║
-# ║    • Le FS Bucket et toute la configuration persistante         ║
 # ║    • La base de données PostgreSQL et toutes ses données        ║
 # ║                                                                  ║
 # ║  AUCUNE RÉCUPÉRATION POSSIBLE après confirmation.               ║
@@ -44,12 +44,26 @@ fi
 
 [ -n "$ORG_INPUT" ] && ORG_FLAG="--org $ORG_INPUT" || ORG_FLAG=""
 
+# Déterminer le nom du NGP (convention : <app-name>-network)
+NGP_NAME="${APP}-network"
+
+# Vérifier si un NGP existe pour cette app
+NGP_EXISTS=false
+if clever features enable ng >/dev/null 2>&1; then
+    if clever ng get "$NGP_NAME" $ORG_FLAG >/dev/null 2>&1; then
+        NGP_EXISTS=true
+    fi
+fi
+
 echo ""
 echo -e "${BOLD}${RED}╔══════════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BOLD}${RED}║           SUPPRESSION DÉFINITIVE ET IRRÉVERSIBLE                 ║${NC}"
 echo -e "${BOLD}${RED}╚══════════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${RED}  Seront supprimés DÉFINITIVEMENT :${NC}"
+if [ "$NGP_EXISTS" = "true" ]; then
+    echo -e "${RED}    • Network Group : $NGP_NAME  (tunnel WireGuard)${NC}"
+fi
 echo -e "${RED}    • Application  : $APP${NC}"
 echo -e "${RED}    • PostgreSQL   : ${APP}-pg  (toutes les données)${NC}"
 echo -e "${RED}    • Redis        : ${APP}-redis${NC}"
@@ -97,6 +111,13 @@ if [ -n "$APP_ENV" ]; then
     fi
 else
     warn "Impossible de lire les vars d'env — bucket non supprimé."
+fi
+
+# Network Group — supprimé en premier pour libérer les membres proprement
+if [ "$NGP_EXISTS" = "true" ]; then
+    echo "y" | clever ng delete "$NGP_NAME" $ORG_FLAG 2>/dev/null \
+        && success "Network Group $NGP_NAME supprimé." \
+        || warn "Network Group $NGP_NAME : suppression échouée ou déjà absent."
 fi
 
 clever addon delete "${APP}-cellar"   --yes 2>/dev/null && success "${APP}-cellar supprimé."   || warn "${APP}-cellar introuvable."
