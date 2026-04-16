@@ -44,16 +44,23 @@ fi
 
 [ -n "$ORG_INPUT" ] && ORG_FLAG="--org $ORG_INPUT" || ORG_FLAG=""
 
-# Déterminer le nom du NGP (convention : <app-name>-network)
-NGP_NAME="${APP}-network"
+# Noms des NGPs possibles selon le mode choisi au déploiement
+NGP_NAME_DB="${APP}-db-network"       # mode 2 (2 NGPs) ou mode 1 via fallback
+NGP_NAME_CACHE="${APP}-cache-network" # mode 2 uniquement
+NGP_NAME_LEGACY="${APP}-network"      # mode 1 (1 NGP, ancien nom)
 
-# Vérifier si un NGP existe pour cette app
-NGP_EXISTS=false
+# Vérifier quels NGPs existent pour cette app
+NGP_DB_EXISTS=false
+NGP_CACHE_EXISTS=false
+NGP_LEGACY_EXISTS=false
 if clever features enable ng >/dev/null 2>&1; then
-    if clever ng get "$NGP_NAME" $ORG_FLAG >/dev/null 2>&1; then
-        NGP_EXISTS=true
-    fi
+    clever ng get "$NGP_NAME_DB"     $ORG_FLAG >/dev/null 2>&1 && NGP_DB_EXISTS=true     || true
+    clever ng get "$NGP_NAME_CACHE"  $ORG_FLAG >/dev/null 2>&1 && NGP_CACHE_EXISTS=true  || true
+    clever ng get "$NGP_NAME_LEGACY" $ORG_FLAG >/dev/null 2>&1 && NGP_LEGACY_EXISTS=true || true
 fi
+NGP_EXISTS=false
+{ [ "$NGP_DB_EXISTS" = "true" ] || [ "$NGP_CACHE_EXISTS" = "true" ] || [ "$NGP_LEGACY_EXISTS" = "true" ]; } \
+    && NGP_EXISTS=true
 
 echo ""
 echo -e "${BOLD}${RED}╔══════════════════════════════════════════════════════════════════╗${NC}"
@@ -61,9 +68,9 @@ echo -e "${BOLD}${RED}║           SUPPRESSION DÉFINITIVE ET IRRÉVERSIBLE    
 echo -e "${BOLD}${RED}╚══════════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${RED}  Seront supprimés DÉFINITIVEMENT :${NC}"
-if [ "$NGP_EXISTS" = "true" ]; then
-    echo -e "${RED}    • Network Group : $NGP_NAME  (tunnel WireGuard)${NC}"
-fi
+if [ "$NGP_DB_EXISTS" = "true" ];     then echo -e "${RED}    • Network Group  : $NGP_NAME_DB  (app + PostgreSQL)${NC}"; fi
+if [ "$NGP_CACHE_EXISTS" = "true" ]; then echo -e "${RED}    • Network Group  : $NGP_NAME_CACHE  (app + Redis)${NC}"; fi
+if [ "$NGP_LEGACY_EXISTS" = "true" ]; then echo -e "${RED}    • Network Group  : $NGP_NAME_LEGACY  (tunnel WireGuard)${NC}"; fi
 echo -e "${RED}    • Application  : $APP${NC}"
 echo -e "${RED}    • PostgreSQL   : ${APP}-pg  (toutes les données)${NC}"
 echo -e "${RED}    • Redis        : ${APP}-redis${NC}"
@@ -113,11 +120,21 @@ else
     warn "Impossible de lire les vars d'env — bucket non supprimé."
 fi
 
-# Network Group — supprimé en premier pour libérer les membres proprement
-if [ "$NGP_EXISTS" = "true" ]; then
-    echo "y" | clever ng delete "$NGP_NAME" $ORG_FLAG 2>/dev/null \
-        && success "Network Group $NGP_NAME supprimé." \
-        || warn "Network Group $NGP_NAME : suppression échouée ou déjà absent."
+# Network Groups — supprimés en premier pour libérer les membres proprement
+if [ "$NGP_DB_EXISTS" = "true" ]; then
+    echo "y" | clever ng delete "$NGP_NAME_DB" $ORG_FLAG 2>/dev/null \
+        && success "Network Group $NGP_NAME_DB supprimé." \
+        || warn "Network Group $NGP_NAME_DB : suppression échouée."
+fi
+if [ "$NGP_CACHE_EXISTS" = "true" ]; then
+    echo "y" | clever ng delete "$NGP_NAME_CACHE" $ORG_FLAG 2>/dev/null \
+        && success "Network Group $NGP_NAME_CACHE supprimé." \
+        || warn "Network Group $NGP_NAME_CACHE : suppression échouée."
+fi
+if [ "$NGP_LEGACY_EXISTS" = "true" ]; then
+    echo "y" | clever ng delete "$NGP_NAME_LEGACY" $ORG_FLAG 2>/dev/null \
+        && success "Network Group $NGP_NAME_LEGACY supprimé." \
+        || warn "Network Group $NGP_NAME_LEGACY : suppression échouée."
 fi
 
 clever addon delete "${APP}-cellar"   --yes 2>/dev/null && success "${APP}-cellar supprimé."   || warn "${APP}-cellar introuvable."
