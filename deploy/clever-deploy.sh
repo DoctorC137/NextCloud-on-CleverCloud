@@ -415,7 +415,7 @@ section "Déploiement"
 # S'assurer que les scripts sont exécutables dans git (nécessaire sur macOS/Windows)
 git update-index --chmod=+x \
     scripts/run.sh scripts/install.sh scripts/skeleton.sh \
-    scripts/cron.sh scripts/sync-apps.sh 2>/dev/null || true
+    scripts/cron.sh scripts/sync-apps.sh scripts/ensure-apps.sh 2>/dev/null || true
 # Committer si des bits ont changé — sinon Clever Cloud clone un repo sans +x
 if ! git diff --cached --quiet 2>/dev/null; then
     git commit -m "chore: marquer les scripts comme exécutables" --no-verify 2>/dev/null || true

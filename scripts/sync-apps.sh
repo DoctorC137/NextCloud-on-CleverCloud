@@ -48,7 +48,13 @@ case "$DIRECTION" in
             || echo "[WARN] sync-apps pull échoué — custom_apps/ local utilisé tel quel."
         ;;
     push)
-        echo "[INFO] sync-apps: push local → S3..."
+        # Guard : ne jamais écraser le cache S3 avec un dossier vide
+        LOCAL_COUNT=$(find "$LOCAL_PATH" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+        if [ "$LOCAL_COUNT" -eq 0 ]; then
+            echo "[WARN] sync-apps: custom_apps/ vide — push annulé (protection anti-wipe)."
+            exit 0
+        fi
+        echo "[INFO] sync-apps: push local → S3 ($LOCAL_COUNT apps)..."
         "$RCLONE" sync "$LOCAL_PATH" "$S3_PATH" "${RCLONE_OPTS[@]}" \
             && echo "[OK] custom_apps/ uploadé vers S3." \
             || echo "[WARN] sync-apps push échoué — réessayer manuellement."

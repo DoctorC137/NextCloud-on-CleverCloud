@@ -178,6 +178,12 @@ write_config_php() {
     'password' => '${REDIS_PASSWORD}',
   ],
 
+  // Chemins des apps (apps/ = bundled read-only, custom_apps/ = writable via S3)
+  'apps_paths' => [
+    ['path' => '${REAL_APP}/apps',        'url' => '/apps',        'writable' => false],
+    ['path' => '${REAL_APP}/custom_apps',  'url' => '/custom_apps', 'writable' => true],
+  ],
+
   // Données
   'datadirectory'              => '${REAL_APP}/data',
   'allow_local_remote_servers' => true,
@@ -318,6 +324,13 @@ else
 
     echo "[OK] Installation Nextcloud terminée."
 fi
+
+# -----------------------------------------------------------------------------
+# Réconciliation des apps : BDD = vérité, S3 = cache, App Store = fallback
+# Doit tourner APRÈS les migrations (occ upgrade) pour que la BDD soit cohérente.
+# -----------------------------------------------------------------------------
+echo "[INFO] Réconciliation des apps custom..."
+bash "$REAL_APP/scripts/ensure-apps.sh" || true
 
 # -----------------------------------------------------------------------------
 # Paramètres idempotents (appliqués à chaque démarrage via occ pour s'assurer

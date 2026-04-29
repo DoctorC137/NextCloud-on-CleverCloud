@@ -117,6 +117,6 @@ fi
 # S'assurer que tous les scripts sont exécutables après extraction
 # -----------------------------------------------------------------------------
 chmod +x scripts/run.sh scripts/install.sh scripts/skeleton.sh \
-         scripts/cron.sh scripts/sync-apps.sh 2>/dev/null || true
+         scripts/cron.sh scripts/sync-apps.sh scripts/ensure-apps.sh 2>/dev/null || true
 
 echo "[OK] Nextcloud $NC_TARGET prêt pour le démarrage."
