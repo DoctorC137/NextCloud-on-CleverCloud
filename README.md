@@ -95,6 +95,17 @@ git clone git@github.com:<you>/nextcloud-on-clevercloud.git
 cd nextcloud-on-clevercloud
 ```
 
+**Optional** — install [gum](https://github.com/charmbracelet/gum) for a richer interactive UI in the deploy/destroy scripts (styled prompts, arrow-key menus, password masking). The scripts auto-detect gum and fall back to plain prompts if it's missing.
+
+```bash
+# macOS
+brew install gum
+# Debian/Ubuntu
+sudo apt install gum
+# Fedora
+sudo dnf install gum
+```
+
 ### Automated (recommended)
 
 ```bash
