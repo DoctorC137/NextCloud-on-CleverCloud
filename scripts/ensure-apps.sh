@@ -57,15 +57,17 @@ find "$CUSTOM_APPS_DIR" -type f -exec sh -c '
 # -----------------------------------------------------------------------------
 echo "[INFO] ensure-apps: vérification de cohérence BDD ↔ filesystem..."
 
-# Lister les apps activées en BDD via oc_appconfig (source de vérité Nextcloud).
-# Seules les vraies apps ont une entrée enabled=yes — core/lib n'y figurent pas.
+# Lister les apps installées en BDD via oc_appconfig (source de vérité Nextcloud).
+# NC 33 utilise la colonne "appid" (pas "app"). On récupère TOUTES les apps
+# connues (enabled=yes OU no) car même une app disabled doit être présente sur
+# le filesystem pour pouvoir être ré-activée sans erreur.
 DB_APPS=$(PGPASSWORD="$POSTGRESQL_ADDON_PASSWORD" psql \
     -h "$POSTGRESQL_ADDON_HOST" \
     -p "$POSTGRESQL_ADDON_PORT" \
     -U "$POSTGRESQL_ADDON_USER" \
     -d "$POSTGRESQL_ADDON_DB" \
-    -tAc "SELECT app FROM oc_appconfig
-           WHERE configkey = 'enabled' AND configvalue = 'yes';" 2>/dev/null || true)
+    -tAc "SELECT DISTINCT appid FROM oc_appconfig
+           WHERE configkey = 'enabled';" 2>/dev/null || true)
 
 if [ -z "$DB_APPS" ]; then
     echo "[INFO] ensure-apps: aucune app en BDD ou BDD inaccessible — skip réconciliation."
