@@ -28,12 +28,45 @@ No FS Bucket. `config/`, `data/`, `custom_apps/` are ephemeral local directories
 
 `maintenance:install` generates three instance-specific secrets (`instanceid`, `passwordsalt`, `secret`) that must remain stable across restarts — sessions, file shares, and encryption depend on them. After first install, `run.sh` extracts them and stores them in the PostgreSQL table `cc_nextcloud_secrets`. On every subsequent start, `config.php` is fully rebuilt from database secrets + environment variables.
 
+### Custom apps persistence
+
+Without FS Bucket, Nextcloud apps installed via the UI or `occ` are lost when the VM restarts. A triple-safety mechanism ensures they survive:
+
+| Layer | Role | How |
+|---|---|---|
+| **S3 cache** | Fast restore | `sync-apps.sh pull` restores `custom_apps/` from Cellar S3 at boot |
+| **PostgreSQL** | Source of truth | `ensure-apps.sh` compares `oc_appconfig` (enabled apps) vs filesystem |
+| **App Store** | Fallback | Missing apps are re-downloaded from the Nextcloud app store |
+
+**At boot** (`run.sh` → `ensure-apps.sh`):
+1. Pull `custom_apps/` from S3 cache (fast, ~3s)
+2. Restore `+x` permissions on binaries (rclone strips them)
+3. Compare DB vs filesystem — reinstall any missing app from the store
+4. Push to S3 if anything was reinstalled
+
+**At runtime** (`cron.sh`, every 5 min):
+- Detects changes in `custom_apps/` (hash comparison) and pushes to S3
+- Captures apps installed via the Nextcloud UI between deploys
+
+**Safety guards:**
+- `sync-apps.sh push` refuses to run if `custom_apps/` is empty (prevents cache wipe)
+- `ensure-apps.sh` uses `php -d memory_limit=1G` for installs (large apps like `richdocumentscode` need it)
+
+### Nextcloud Office (Collabora)
+
+`richdocumentscode` embeds a full Collabora Online server (LibreOffice-based, ~270 MB). It runs as a background process (`coolwsd`) on the same VM, proxied through `proxy.php`.
+
+**Requirements:**
+- **Instance size M (2 GB RAM) minimum** — coolwsd + its forks consume ~1.5 GB. Instance S (1 GB) triggers OOM kills.
+- `apps_paths` in `config.php` must include `custom_apps/` as writable — handled by `run.sh`.
+- Binary permissions must be restored after S3 sync — handled by `ensure-apps.sh`.
+
 ### Boot sequence
 
 | Hook | Script | What it does |
 |---|---|---|
 | `CC_POST_BUILD_HOOK` | `install.sh` | Downloads Nextcloud, handles step-by-step major upgrades |
-| `CC_PRE_RUN_HOOK` | `run.sh` | Waits for PostgreSQL, installs (first boot) or upgrades, rebuilds `config.php`, pre-creates S3 bucket |
+| `CC_PRE_RUN_HOOK` | `run.sh` | Waits for PostgreSQL, installs (first boot) or upgrades, rebuilds `config.php`, pre-creates S3 bucket, reconciles custom apps |
 | `CC_RUN_SUCCEEDED_HOOK` | `skeleton.sh` | Uploads default skeleton files via WebDAV (first boot only) |
 
 ### Distributed locking
@@ -48,12 +81,13 @@ Nextcloud blocks version skips across majors. `install.sh` compares the installe
 
 ## Instance sizing
 
-| | Size |
-|---|---|
-| **Build instance** | M (dedicated, speeds up `composer install` + NC download) |
-| **Runtime min** | S |
-| **Runtime max** | Chosen during `clever-deploy.sh` (vertical auto-scaling) |
-| **Horizontal** | 1 instance (Redis sessions allow multi-instance if needed) |
+| | Size | Notes |
+|---|---|---|
+| **Build instance** | M | Dedicated, speeds up NC download |
+| **Runtime min** | S | Without Collabora |
+| **Runtime min** | **M (2 GB)** | **With Collabora (richdocumentscode)** — coolwsd needs ~1.5 GB |
+| **Runtime max** | Chosen during `clever-deploy.sh` | Vertical auto-scaling |
+| **Horizontal** | 1 instance | Redis sessions allow multi-instance if needed |
 
 ---
 
@@ -66,7 +100,8 @@ Nextcloud blocks version skips across majors. `install.sh` compares the installe
 │   ├── run.sh          CC_PRE_RUN_HOOK    — rebuild config.php, install or upgrade
 │   ├── skeleton.sh     CC_RUN_SUCCEEDED_HOOK — uploads example files (first boot)
 │   ├── cron.sh         Called by Clever Cloud native cron every 5 min
-│   └── sync-apps.sh    Syncs custom_apps/ to/from S3
+│   ├── sync-apps.sh    Syncs custom_apps/ to/from S3 (with empty-push guard)
+│   └── ensure-apps.sh  DB-driven app reconciliation (S3 cache → DB check → app store fallback)
 ├── clevercloud/
 │   └── cron.json       Native CC cron — curls /cron.php every 5 min
 ├── deploy/
