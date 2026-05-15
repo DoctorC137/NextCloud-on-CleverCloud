@@ -28,10 +28,41 @@
 
 set -e
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
-success() { echo -e "${GREEN}  ✓  $1${NC}"; }
-warn()    { echo -e "${YELLOW}  ⚠  $1${NC}"; }
-error()   { echo -e "${RED}  ✗  $1${NC}"; exit 1; }
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+
+# Détection de gum — UI riche si présent, fallback sinon
+HAS_GUM=false
+command -v gum >/dev/null 2>&1 && HAS_GUM=true
+
+success() { echo -e "${GREEN}  ✓  $1${NC}" >&2; }
+warn()    { echo -e "${YELLOW}  ⚠  $1${NC}" >&2; }
+error()   { echo -e "${RED}  ✗  $1${NC}"   >&2; exit 1; }
+
+# Bandeau de danger
+danger_banner() {
+    local text="$1"
+    if $HAS_GUM; then
+        gum style --border double --align center --width 60 --margin "1 2" --padding "1 4" \
+            --foreground 196 --border-foreground 196 --bold "$text"
+    else
+        echo ""
+        echo -e "${BOLD}${RED}╔══════════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${BOLD}${RED}║           $(printf '%-55s' "$text")║${NC}"
+        echo -e "${BOLD}${RED}╚══════════════════════════════════════════════════════════════════╝${NC}"
+    fi
+}
+
+# Saisie texte avec gum si dispo
+prompt_text() {
+    local prompt="$1" placeholder="${2:-}" v
+    if $HAS_GUM; then
+        v=$(gum input --prompt "▸ " --header "$prompt" --placeholder "$placeholder" --width 60)
+    else
+        echo -ne "${BOLD}${RED}  $prompt : ${NC}" >&2
+        read -r v
+    fi
+    echo "$v"
+}
 
 APP="$1"
 ORG_INPUT="$2"
@@ -62,25 +93,40 @@ NGP_EXISTS=false
 { [ "$NGP_DB_EXISTS" = "true" ] || [ "$NGP_CACHE_EXISTS" = "true" ] || [ "$NGP_LEGACY_EXISTS" = "true" ]; } \
     && NGP_EXISTS=true
 
-echo ""
-echo -e "${BOLD}${RED}╔══════════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}${RED}║           SUPPRESSION DÉFINITIVE ET IRRÉVERSIBLE                 ║${NC}"
-echo -e "${BOLD}${RED}╚══════════════════════════════════════════════════════════════════╝${NC}"
-echo ""
-echo -e "${RED}  Seront supprimés DÉFINITIVEMENT :${NC}"
-if [ "$NGP_DB_EXISTS" = "true" ];     then echo -e "${RED}    • Network Group  : $NGP_NAME_DB  (app + PostgreSQL)${NC}"; fi
-if [ "$NGP_CACHE_EXISTS" = "true" ]; then echo -e "${RED}    • Network Group  : $NGP_NAME_CACHE  (app + Redis)${NC}"; fi
-if [ "$NGP_LEGACY_EXISTS" = "true" ]; then echo -e "${RED}    • Network Group  : $NGP_NAME_LEGACY  (tunnel WireGuard)${NC}"; fi
-echo -e "${RED}    • Application  : $APP${NC}"
-echo -e "${RED}    • PostgreSQL   : ${APP}-pg  (toutes les données)${NC}"
-echo -e "${RED}    • Redis        : ${APP}-redis${NC}"
-echo -e "${RED}    • Cellar S3    : ${APP}-cellar  (TOUS les fichiers uploadés)${NC}"
-echo -e "${RED}    • Local        : remote clever + .clever.json${NC}"
-echo ""
-echo -e "${BOLD}${RED}  ⚠  Cette opération est IRRÉVERSIBLE. Aucune récupération possible.${NC}"
-echo ""
-echo -ne "${BOLD}${RED}  Tapez exactement 'supprimer' pour confirmer : ${NC}"
-read -r CONFIRM
+danger_banner "SUPPRESSION DÉFINITIVE ET IRRÉVERSIBLE"
+
+# Construction de la liste des éléments à supprimer
+TARGETS=()
+[ "$NGP_DB_EXISTS"     = "true" ] && TARGETS+=("Network Group   : $NGP_NAME_DB  (app + PostgreSQL)")
+[ "$NGP_CACHE_EXISTS"  = "true" ] && TARGETS+=("Network Group   : $NGP_NAME_CACHE  (app + Redis)")
+[ "$NGP_LEGACY_EXISTS" = "true" ] && TARGETS+=("Network Group   : $NGP_NAME_LEGACY  (tunnel WireGuard)")
+TARGETS+=("Application     : $APP")
+TARGETS+=("PostgreSQL      : ${APP}-pg  (toutes les données)")
+TARGETS+=("Redis           : ${APP}-redis")
+TARGETS+=("Cellar S3       : ${APP}-cellar  (TOUS les fichiers uploadés)")
+TARGETS+=("Local           : remote clever + .clever.json")
+
+if $HAS_GUM; then
+    LIST_BODY=$(printf 'Seront supprimés DÉFINITIVEMENT :\n\n')
+    for t in "${TARGETS[@]}"; do LIST_BODY+="  • $t"$'\n'; done
+    LIST_BODY+=$'\n  ⚠  IRRÉVERSIBLE. Aucune récupération possible.'
+    gum style --border thick --padding "1 2" --margin "0 2" \
+        --foreground 196 --border-foreground 196 "$LIST_BODY"
+    if ! gum confirm "Continuer la suppression ?" --default=false \
+        --selected.background "196" --selected.foreground "230"; then
+        echo ""; warn "Annulé — aucune ressource supprimée."; exit 0
+    fi
+    CONFIRM=$(prompt_text "Tapez exactement 'supprimer' pour confirmer" "supprimer")
+else
+    echo ""
+    echo -e "${RED}  Seront supprimés DÉFINITIVEMENT :${NC}"
+    for t in "${TARGETS[@]}"; do echo -e "${RED}    • $t${NC}"; done
+    echo ""
+    echo -e "${BOLD}${RED}  ⚠  Cette opération est IRRÉVERSIBLE. Aucune récupération possible.${NC}"
+    echo ""
+    echo -ne "${BOLD}${RED}  Tapez exactement 'supprimer' pour confirmer : ${NC}"
+    read -r CONFIRM
+fi
 [ "$CONFIRM" != "supprimer" ] && echo "" && warn "Annulé — aucune ressource supprimée." && exit 0
 echo ""
 
@@ -145,5 +191,10 @@ git remote remove clever 2>/dev/null  && success "Remote clever supprimé."     
 rm -f .clever.json && success ".clever.json supprimé."
 
 echo ""
-echo -e "${GREEN}  Nettoyage terminé. Relancez clever-deploy.sh pour une nouvelle installation.${NC}"
+if $HAS_GUM; then
+    gum style --foreground 46 --bold --margin "1 2" \
+        "Nettoyage terminé. Relancez clever-deploy.sh pour une nouvelle installation."
+else
+    echo -e "${GREEN}  Nettoyage terminé. Relancez clever-deploy.sh pour une nouvelle installation.${NC}"
+fi
 echo ""

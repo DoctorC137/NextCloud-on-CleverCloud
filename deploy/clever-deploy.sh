@@ -1,40 +1,173 @@
 #!/bin/bash
 # =============================================================================
 # clever-deploy.sh — Déploiement automatisé Nextcloud sur Clever Cloud
+#
+# UI : utilise gum (https://github.com/charmbracelet/gum) si installé,
+#      fallback sur des prompts shell standards sinon.
 # =============================================================================
 
-set -e
+set -eE
+set -o pipefail
 
-# Couleurs
+# Couleurs ANSI (utilisées dans les fallbacks et messages courts)
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 
-info()    { echo -e "${BLUE}  ℹ  $1${NC}"; }
-success() { echo -e "${GREEN}  ✓  $1${NC}"; }
-warn()    { echo -e "${YELLOW}  ⚠  $1${NC}"; }
-error()   { echo -e "${RED}  ✗  $1${NC}"; exit 1; }
-section() { echo -e "\n${BOLD}${BLUE}▶ $1${NC}\n"; }
+# -----------------------------------------------------------------------------
+# Détection de gum
+# -----------------------------------------------------------------------------
+HAS_GUM=false
+command -v gum >/dev/null 2>&1 && HAS_GUM=true
 
-ask() {
-    echo -e "${CYAN}  ?  $1${NC}"
-    echo -ne "${BOLD}      → ${NC}"
+# Messages diagnostics → stderr, pour rester visibles même quand un helper
+# est appelé via $(...) (sinon stdout est capturé et le message disparaît).
+info()    { echo -e "${BLUE}  ℹ  $1${NC}" >&2; }
+success() { echo -e "${GREEN}  ✓  $1${NC}" >&2; }
+warn()    { echo -e "${YELLOW}  ⚠  $1${NC}" >&2; }
+error()   { echo -e "${RED}  ✗  $1${NC}"   >&2; exit 1; }
+
+section() {
+    echo ""
+    if $HAS_GUM; then
+        gum style --foreground 212 --bold "▶ $1"
+    else
+        echo -e "${BOLD}${BLUE}▶ $1${NC}"
+    fi
+    echo ""
 }
 
-# Affiche un menu de sélection avec highlight sur le défaut
-menu() {
-    local title="$1"; shift
-    local default_idx="$1"; shift
-    local options=("$@")
-    echo -e "${CYAN}  ?  $title${NC}"
-    for i in "${!options[@]}"; do
-        local num=$((i + 1))
-        if [ "$i" -eq "$((default_idx - 1))" ]; then
-            echo -e "      ${BOLD}${GREEN}$num) ${options[$i]} ★ conseillé${NC}"
-        else
-            echo -e "      ${DIM}$num) ${options[$i]}${NC}"
+# Saisie texte avec valeur par défaut.  Args: prompt, default_value, [placeholder]
+prompt_input() {
+    local prompt="$1" default="${2:-}" placeholder="${3:-}" v
+    if $HAS_GUM; then
+        v=$(gum input --prompt "▸ " --header "$prompt" --placeholder "$placeholder" --value "$default" --width 60)
+    else
+        echo -e "${CYAN}  ?  $prompt${NC}" >&2
+        echo -ne "${BOLD}      → ${NC}" >&2
+        read -r v
+    fi
+    echo "${v:-$default}"
+}
+
+# Saisie mot de passe (masquée).  Args: prompt
+prompt_password() {
+    local prompt="$1" v
+    if $HAS_GUM; then
+        v=$(gum input --password --prompt "▸ " --header "$prompt" --width 60)
+    else
+        echo -e "${CYAN}  ?  $prompt${NC}" >&2
+        echo -ne "${BOLD}      → ${NC}" >&2
+        read -s -r v
+        echo "" >&2
+    fi
+    echo "$v"
+}
+
+# Saisie mot de passe avec confirmation et retry.  Args: prompt
+# Boucle jusqu'à : non-vide ET concordant avec la confirmation.
+# L'utilisateur peut toujours abandonner via Ctrl+C.
+prompt_password_confirmed() {
+    local prompt="$1" pwd1 pwd2
+    while true; do
+        pwd1=$(prompt_password "$prompt")
+        if [ -z "$pwd1" ]; then
+            warn "Mot de passe vide — réessayez (Ctrl+C pour annuler)."
+            continue
         fi
+        pwd2=$(prompt_password "Confirmez le mot de passe")
+        if [ "$pwd1" != "$pwd2" ]; then
+            warn "Les deux saisies ne correspondent pas — réessayez."
+            continue
+        fi
+        echo "$pwd1"
+        return 0
     done
-    echo -ne "${BOLD}      → ${NC}"
+}
+
+# Confirmation oui/non.  Args: question.  Retour 0 = oui, 1 = non.
+prompt_confirm() {
+    local prompt="$1" v
+    if $HAS_GUM; then
+        gum confirm "$prompt"
+    else
+        echo -e "${CYAN}  ?  $prompt (o/N)${NC}" >&2
+        echo -ne "${BOLD}      → ${NC}" >&2
+        read -r v
+        [[ "$v" =~ ^[oOyY]$ ]]
+    fi
+}
+
+# Sélection dans une liste.  Args: header, default_code, [code1, label1, code2, label2 ...]
+# Renvoie le code sélectionné sur stdout.
+prompt_choose() {
+    local header="$1" default_code="$2"; shift 2
+    local codes=() labels=()
+    while [ $# -ge 2 ]; do
+        codes+=("$1"); labels+=("$2"); shift 2
+    done
+
+    if $HAS_GUM; then
+        local default_label=""
+        for i in "${!codes[@]}"; do
+            [ "${codes[$i]}" = "$default_code" ] && default_label="${labels[$i]}"
+        done
+        local selected
+        selected=$(gum choose --header "$header" --selected="$default_label" --cursor "▸ " --height 12 "${labels[@]}")
+        for i in "${!labels[@]}"; do
+            [ "${labels[$i]}" = "$selected" ] && { echo "${codes[$i]}"; return; }
+        done
+        echo "$default_code"
+    else
+        echo -e "${CYAN}  ?  $header${NC}" >&2
+        local default_idx=1
+        for i in "${!codes[@]}"; do
+            local num=$((i + 1))
+            if [ "${codes[$i]}" = "$default_code" ]; then
+                echo -e "      ${BOLD}${GREEN}$num) ${labels[$i]} ★ conseillé${NC}" >&2
+                default_idx=$num
+            else
+                echo -e "      ${DIM}$num) ${labels[$i]}${NC}" >&2
+            fi
+        done
+        echo -ne "${BOLD}      → ${NC}" >&2
+        local choice
+        read -r choice
+        choice="${choice:-$default_idx}"
+        local idx=$((choice - 1))
+        if [ "$idx" -ge 0 ] && [ "$idx" -lt "${#codes[@]}" ]; then
+            echo "${codes[$idx]}"
+        else
+            echo "$default_code"
+        fi
+    fi
+}
+
+# Encadré de titre / succès.  Args: text, fg_color (212=mauve, 46=vert, 196=rouge)
+banner() {
+    local text="$1" color="${2:-212}"
+    if $HAS_GUM; then
+        gum style --border double --align center --width 50 --margin "1 2" --padding "1 4" \
+            --foreground "$color" --border-foreground "$color" "$text"
+    else
+        local c="$BLUE"
+        [ "$color" = "46"  ] && c="$GREEN"
+        [ "$color" = "196" ] && c="$RED"
+        echo ""
+        echo -e "${BOLD}${c}╔══════════════════════════════════════════╗${NC}"
+        echo -e "${BOLD}${c}║  $(printf '%-40s' "$text")║${NC}"
+        echo -e "${BOLD}${c}╚══════════════════════════════════════════╝${NC}"
+    fi
+}
+
+# Spinner pour commandes courtes silencieuses.  Args: title, then command...
+spin() {
+    local title="$1"; shift
+    if $HAS_GUM; then
+        gum spin --spinner dot --title "$title" -- "$@"
+    else
+        echo -e "${DIM}  ⋯  $title${NC}"
+        "$@"
+    fi
 }
 
 extract_env() {
@@ -58,11 +191,12 @@ get_real_id() {
 }
 
 # -----------------------------------------------------------------------------
-# Nettoyage automatique en cas d'erreur
+# Nettoyage automatique en cas d'erreur ou d'interruption (Ctrl+C)
 # -----------------------------------------------------------------------------
-cleanup_on_error() {
-    echo ""
-    warn "Erreur détectée — nettoyage en cours..."
+CLEANED_UP=false
+cleanup_resources() {
+    [ "$CLEANED_UP" = "true" ] && return
+    CLEANED_UP=true
     # Network Group en premier (avant les addons)
     if [ "$ENABLE_NGP" = "true" ]; then
         [ -n "$NGP_NAME_DB" ]    && echo "y" | clever ng delete "$NGP_NAME_DB"    $ORG_FLAG 2>/dev/null || true
@@ -74,18 +208,39 @@ cleanup_on_error() {
     [ -n "$APP_NAME" ]          && clever delete --app "$APP_NAME" --yes 2>/dev/null || true
     git remote remove clever 2>/dev/null || true
     rm -f .clever.json
-    warn "Nettoyage terminé."
 }
-trap cleanup_on_error ERR
+
+on_error() {
+    local exit_code=$?
+    trap - ERR INT TERM
+    echo ""
+    warn "Erreur détectée — nettoyage en cours..."
+    cleanup_resources
+    warn "Nettoyage terminé."
+    exit "$exit_code"
+}
+
+on_interrupt() {
+    trap - ERR INT TERM
+    echo ""
+    warn "Interruption (Ctrl+C) — nettoyage en cours..."
+    cleanup_resources
+    warn "Nettoyage terminé."
+    exit 130
+}
+
+trap on_error ERR
+trap on_interrupt INT TERM
 
 # =============================================================================
 # PRÉREQUIS
 # =============================================================================
-echo ""
-echo -e "${BOLD}${BLUE}╔══════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}${BLUE}║     Nextcloud — Déploiement Clever Cloud  ║${NC}"
-echo -e "${BOLD}${BLUE}╚══════════════════════════════════════════╝${NC}"
-echo ""
+banner "Nextcloud — Déploiement Clever Cloud" 212
+
+if ! $HAS_GUM; then
+    echo -e "  ${DIM}Astuce : installez gum pour une UI plus riche — https://github.com/charmbracelet/gum${NC}"
+    echo ""
+fi
 
 section "Vérification des prérequis"
 command -v clever  >/dev/null 2>&1 || error "clever-tools non installé : npm install -g clever-tools"
@@ -100,14 +255,10 @@ success "Prérequis OK."
 # =============================================================================
 section "Configuration générale"
 
-ask "Nom de l'application [défaut : nextcloud] :"
-read -r APP_NAME
-APP_NAME="${APP_NAME:-nextcloud}"
+APP_NAME=$(prompt_input "Nom de l'application" "nextcloud" "ex : nextcloud")
 ALIAS="$APP_NAME"
 
-echo ""
-ask "ID organisation Clever Cloud (Entrée = compte personnel) :"
-read -r ORG_INPUT
+ORG_INPUT=$(prompt_input "ID organisation Clever Cloud (vide = compte personnel)" "" "orga_xxxxxxxx")
 if [ -n "$ORG_INPUT" ]; then
     ORG_FLAG="--org $ORG_INPUT"
     info "Organisation : $ORG_INPUT"
@@ -116,29 +267,20 @@ else
     info "Compte personnel sélectionné."
 fi
 
-echo ""
-ask "Domaine public (Entrée = domaine cleverapps.io automatique) :"
-read -r NEXTCLOUD_DOMAIN
+NEXTCLOUD_DOMAIN=$(prompt_input "Domaine public (vide = cleverapps.io auto)" "" "cloud.exemple.fr")
 DOMAIN_AUTO=false
 [ -z "$NEXTCLOUD_DOMAIN" ] && DOMAIN_AUTO=true && info "Domaine automatique cleverapps.io."
 
 # Région
-echo ""
-REGIONS=(
-    "Paris          (par)  — Europe, France"
-    "Roubaix        (rbx)  — Europe, France"
-    "Scaleway       (scw)  — Europe, France"
-    "Londres        (ldn)  — Europe, Royaume-Uni"
-    "Warsaw         (wsw)  — Europe, Pologne"
-    "Montréal       (mtl)  — Amérique du Nord"
-    "Singapour      (sgp)  — Asie-Pacifique"
-    "Sydney         (syd)  — Asie-Pacifique"
-)
-REGION_CODES=("par" "rbx" "scw" "ldn" "wsw" "mtl" "sgp" "syd")
-menu "Région de déploiement :" 1 "${REGIONS[@]}"
-read -r RC
-RC="${RC:-1}"
-REGION="${REGION_CODES[$((RC - 1))]:-par}"
+REGION=$(prompt_choose "Région de déploiement" "par" \
+    "par" "Paris       (par)  — Europe, France" \
+    "rbx" "Roubaix     (rbx)  — Europe, France" \
+    "scw" "Scaleway    (scw)  — Europe, France" \
+    "ldn" "Londres     (ldn)  — Europe, Royaume-Uni" \
+    "wsw" "Warsaw      (wsw)  — Europe, Pologne" \
+    "mtl" "Montréal    (mtl)  — Amérique du Nord" \
+    "sgp" "Singapour   (sgp)  — Asie-Pacifique" \
+    "syd" "Sydney      (syd)  — Asie-Pacifique")
 info "Région : $REGION"
 
 # =============================================================================
@@ -146,17 +288,13 @@ info "Région : $REGION"
 # =============================================================================
 section "Dimensionnement — Application PHP"
 
-PHP_PLANS=(
-    "nano  —  256 MB RAM, 0.5 vCPU   (test / dev)"
-    "XS    —  512 MB RAM, 1 vCPU     (petite équipe)"
-    "S     —  1 GB RAM,   2 vCPUs    (usage standard)"
-    "M     —  2 GB RAM,   4 vCPUs    (usage intensif)"
-)
-PHP_PLAN_CODES=("nano" "XS" "S" "M")
-menu "Plan de l'application PHP :" 3 "${PHP_PLANS[@]}"
-read -r PC
-PC="${PC:-3}"
-PHP_PLAN="${PHP_PLAN_CODES[$((PC - 1))]:-S}"
+PHP_PLAN=$(prompt_choose "Plan de l'application PHP" "S" \
+    "nano" "nano  —  582 MB RAM, 1 vCPU      (test / dev)" \
+    "XS"   "XS    —  1.1 GB RAM, 1 vCPU      (solo, 1-3 utilisateurs)" \
+    "S"    "S     —  2 GB RAM,   2 vCPUs     (petite équipe, 5-10)" \
+    "M"    "M     —  4 GB RAM,   4 vCPUs     (équipe standard, 10-30)" \
+    "L"    "L     —  8 GB RAM,   6 vCPUs     (usage intensif, 30-100)" \
+    "XL"   "XL    —  16 GB RAM,  8 vCPUs     (grande équipe, 100+)")
 info "Plan PHP : $PHP_PLAN"
 
 # =============================================================================
@@ -164,30 +302,18 @@ info "Plan PHP : $PHP_PLAN"
 # =============================================================================
 section "Dimensionnement — Base de données PostgreSQL"
 
-PG_PLANS=(
-    "xxs_sml  —  1 vCPU,  512 MB RAM,  1 GB  BDD  (petite équipe)"
-    "xs_sml   —  1 vCPU,  1 GB RAM,    5 GB  BDD  (usage standard)"
-    "s_sml    —  2 vCPUs, 2 GB RAM,   10 GB  BDD  (usage intensif)"
-    "m_sml    —  4 vCPUs, 4 GB RAM,   20 GB  BDD  (grande organisation)"
-)
-PG_PLAN_CODES=("xxs_sml" "xs_sml" "s_sml" "m_sml")
-menu "Plan PostgreSQL :" 2 "${PG_PLANS[@]}"
-read -r PGC
-PGC="${PGC:-2}"
-PG_PLAN="${PG_PLAN_CODES[$((PGC - 1))]:-xs_sml}"
+PG_PLAN=$(prompt_choose "Plan PostgreSQL" "xs_sml" \
+    "xxs_sml" "xxs_sml  —  1 vCPU,  512 MB RAM,  1 GB  BDD  (solo / test)" \
+    "xs_sml"  "xs_sml   —  1 vCPU,  1 GB RAM,    5 GB  BDD  (petite équipe, 5-10)" \
+    "s_sml"   "s_sml    —  2 vCPUs, 2 GB RAM,   10 GB  BDD  (équipe standard, 10-30)" \
+    "m_sml"   "m_sml    —  4 vCPUs, 4 GB RAM,   20 GB  BDD  (grande équipe, 30+)")
 info "Plan PostgreSQL : $PG_PLAN"
 
-# Version PostgreSQL
-PG_VERSIONS=(
-    "16  —  recommandée par Nextcloud (stable, éprouvée)"
-    "17  —  dernière version (fournie par défaut par Clever Cloud)"
-    "15  —  version antérieure"
-)
-PG_VERSION_CODES=("16" "17" "15")
-menu "Version PostgreSQL :" 1 "${PG_VERSIONS[@]}"
-read -r PGV
-PGV="${PGV:-1}"
-PG_VERSION="${PG_VERSION_CODES[$((PGV - 1))]:-16}"
+PG_VERSION=$(prompt_choose "Version PostgreSQL" "18" \
+    "18" "18  —  recommandée par Nextcloud" \
+    "17" "17  —  défaut Clever Cloud" \
+    "16" "16  —  version stable précédente" \
+    "15" "15  —  ancienne version")
 info "Version PostgreSQL : $PG_VERSION"
 
 # =============================================================================
@@ -195,17 +321,11 @@ info "Version PostgreSQL : $PG_VERSION"
 # =============================================================================
 section "Dimensionnement — Cache Redis"
 
-REDIS_PLANS=(
-    "s_mono   —  1 vCPU, 128 MB  (petite équipe)"
-    "m_mono   —  1 vCPU, 256 MB  (usage standard)"
-    "l_mono   —  1 vCPU, 512 MB  (usage intensif)"
-    "xl_mono  —  1 vCPU, 1 GB    (grande organisation)"
-)
-REDIS_PLAN_CODES=("s_mono" "m_mono" "l_mono" "xl_mono")
-menu "Plan Redis :" 2 "${REDIS_PLANS[@]}"
-read -r REC
-REC="${REC:-2}"
-REDIS_PLAN="${REDIS_PLAN_CODES[$((REC - 1))]:-m_mono}"
+REDIS_PLAN=$(prompt_choose "Plan Redis" "m_mono" \
+    "s_mono"  "s_mono   —  1 vCPU, 128 MB  (solo / petite équipe)" \
+    "m_mono"  "m_mono   —  1 vCPU, 256 MB  (équipe standard)" \
+    "l_mono"  "l_mono   —  1 vCPU, 512 MB  (usage intensif)" \
+    "xl_mono" "xl_mono  —  1 vCPU, 1 GB    (grande équipe)")
 info "Plan Redis : $REDIS_PLAN"
 
 # =============================================================================
@@ -216,12 +336,10 @@ echo -e "  ${DIM}Crée deux tunnels WireGuard distincts : app↔PostgreSQL et ap
 echo -e "  ${DIM}PostgreSQL et Redis ne peuvent pas se joindre (least-privilege).${NC}"
 echo -e "  ${DIM}Les hostnames publics restent actifs — aucun impact sur l'installation.${NC}"
 echo ""
-ask "Activer les Network Groups ? (o/N) :"
-read -r ENABLE_NGP_INPUT
 ENABLE_NGP=false
 NGP_NAME_DB=""
 NGP_NAME_CACHE=""
-if [[ "$ENABLE_NGP_INPUT" =~ ^[oOyY]$ ]]; then
+if prompt_confirm "Activer les Network Groups ?"; then
     ENABLE_NGP=true
     NGP_NAME_DB="${APP_NAME}-db-network"
     NGP_NAME_CACHE="${APP_NAME}-cache-network"
@@ -235,40 +353,38 @@ fi
 # =============================================================================
 section "Compte administrateur Nextcloud"
 
-ask "Nom d'utilisateur admin [défaut : admin] :"
-read -r NEXTCLOUD_ADMIN_USER
-NEXTCLOUD_ADMIN_USER="${NEXTCLOUD_ADMIN_USER:-admin}"
+NEXTCLOUD_ADMIN_USER=$(prompt_input "Nom d'utilisateur admin" "admin" "admin")
 
-echo ""
-ask "Mot de passe admin :"
-read -s -r NEXTCLOUD_ADMIN_PASSWORD
-echo ""
-[ -z "$NEXTCLOUD_ADMIN_PASSWORD" ] && error "Mot de passe obligatoire."
-
-ask "Confirmez le mot de passe :"
-read -s -r NC_PASS_CONFIRM
-echo ""
-[ "$NEXTCLOUD_ADMIN_PASSWORD" != "$NC_PASS_CONFIRM" ] && error "Mots de passe différents."
+NEXTCLOUD_ADMIN_PASSWORD=$(prompt_password_confirmed "Mot de passe admin")
 
 # =============================================================================
 # RÉSUMÉ
 # =============================================================================
 section "Résumé"
-echo -e "  ${DIM}Application${NC}   ${BOLD}$APP_NAME${NC} — région ${BOLD}$REGION${NC}"
-echo -e "  ${DIM}Domaine    ${NC}   ${BOLD}${NEXTCLOUD_DOMAIN:-cleverapps.io automatique}${NC}"
-echo -e "  ${DIM}PHP        ${NC}   ${BOLD}$PHP_PLAN${NC}"
-echo -e "  ${DIM}PostgreSQL ${NC}   ${BOLD}$PG_PLAN${NC} — version ${BOLD}$PG_VERSION${NC}"
-echo -e "  ${DIM}Redis      ${NC}   ${BOLD}$REDIS_PLAN${NC}"
-if [ "$ENABLE_NGP" = "true" ]; then
-    echo -e "  ${DIM}Network Groups${NC} ${BOLD}${GREEN}activés${NC} — PG et Redis isolés l'un de l'autre"
+NGP_LINE="désactivés"
+[ "$ENABLE_NGP" = "true" ] && NGP_LINE="activés — PG et Redis isolés l'un de l'autre"
+
+if $HAS_GUM; then
+    gum style --border rounded --padding "1 2" --margin "0 2" --border-foreground 212 \
+"$(printf 'Application      %s — région %s\nDomaine          %s\nPHP              %s\nPostgreSQL       %s — version %s\nRedis            %s\nNetwork Groups   %s\nAdmin            %s' \
+        "$APP_NAME" "$REGION" \
+        "${NEXTCLOUD_DOMAIN:-cleverapps.io automatique}" \
+        "$PHP_PLAN" \
+        "$PG_PLAN" "$PG_VERSION" \
+        "$REDIS_PLAN" \
+        "$NGP_LINE" \
+        "$NEXTCLOUD_ADMIN_USER")"
 else
-    echo -e "  ${DIM}Network Groups${NC} ${DIM}désactivés${NC}"
+    echo -e "  ${DIM}Application${NC}   ${BOLD}$APP_NAME${NC} — région ${BOLD}$REGION${NC}"
+    echo -e "  ${DIM}Domaine    ${NC}   ${BOLD}${NEXTCLOUD_DOMAIN:-cleverapps.io automatique}${NC}"
+    echo -e "  ${DIM}PHP        ${NC}   ${BOLD}$PHP_PLAN${NC}"
+    echo -e "  ${DIM}PostgreSQL ${NC}   ${BOLD}$PG_PLAN${NC} — version ${BOLD}$PG_VERSION${NC}"
+    echo -e "  ${DIM}Redis      ${NC}   ${BOLD}$REDIS_PLAN${NC}"
+    echo -e "  ${DIM}Network Groups${NC} ${BOLD}$NGP_LINE${NC}"
+    echo -e "  ${DIM}Admin      ${NC}   ${BOLD}$NEXTCLOUD_ADMIN_USER${NC}"
 fi
-echo -e "  ${DIM}Admin      ${NC}   ${BOLD}$NEXTCLOUD_ADMIN_USER${NC}"
 echo ""
-ask "Confirmer le déploiement ? (o/N) :"
-read -r CONFIRM
-[[ "$CONFIRM" =~ ^[oOyY]$ ]] || { trap - ERR; warn "Annulé."; exit 0; }
+prompt_confirm "Confirmer le déploiement ?" || { trap - ERR INT TERM; warn "Annulé."; exit 0; }
 
 # =============================================================================
 # CRÉATION DES RESSOURCES
@@ -279,13 +395,14 @@ clever create --type php --region "$REGION" $ORG_FLAG --alias "$ALIAS" "$APP_NAM
 # Récupère l'APP_ID depuis .clever.json (nécessaire pour le sizing et le NGP)
 APP_ID=$(python3 -c "import json; apps=json.load(open('.clever.json'))['apps']; print(next(a['app_id'] for a in apps if a['alias']=='$ALIAS'))" 2>/dev/null)
 
-# Apply instance sizing: runtime S→chosen plan (vertical scaling), build M (separateBuild)
+# Apply instance sizing: runtime fixed à $PHP_PLAN, build M (separateBuild)
+# (minFlavor=maxFlavor évite l'erreur silencieuse min>max quand $PHP_PLAN < S)
 if [ -n "$APP_ID" ] && [ -n "$ORG_INPUT" ]; then
     clever curl -s -X PUT \
         -H "Content-Type: application/json" \
-        -d "{\"minInstances\":1,\"maxInstances\":1,\"minFlavor\":\"S\",\"maxFlavor\":\"$PHP_PLAN\",\"homogeneous\":false,\"separateBuild\":true,\"buildFlavor\":\"M\"}" \
+        -d "{\"minInstances\":1,\"maxInstances\":1,\"minFlavor\":\"$PHP_PLAN\",\"maxFlavor\":\"$PHP_PLAN\",\"homogeneous\":false,\"separateBuild\":true,\"buildFlavor\":\"M\"}" \
         "https://api.clever-cloud.com/v2/organisations/${ORG_INPUT}/applications/${APP_ID}" >/dev/null 2>&1
-    success "Runtime: S → $PHP_PLAN (vertical scaling) | Build: M (dedicated)"
+    success "Runtime: $PHP_PLAN | Build: M (dedicated)"
 fi
 
 if [ "$DOMAIN_AUTO" = "true" ]; then
@@ -294,13 +411,20 @@ if [ "$DOMAIN_AUTO" = "true" ]; then
     [ -z "$NEXTCLOUD_DOMAIN" ] && NEXTCLOUD_DOMAIN="${APP_NAME}.cleverapps.io"
 fi
 
-clever env set --alias "$ALIAS" CC_PHP_VERSION      8.2
-clever env set --alias "$ALIAS" CC_PHP_MEMORY_LIMIT 512M
-clever env set --alias "$ALIAS" CC_PHP_EXTENSIONS   apcu
-clever env set --alias "$ALIAS" CC_WEBROOT          /
-clever env set --alias "$ALIAS" CC_POST_BUILD_HOOK "scripts/install.sh"
-clever env set --alias "$ALIAS" CC_PRE_RUN_HOOK    "scripts/run.sh"
-clever env set --alias "$ALIAS" CC_RUN_SUCCEEDED_HOOK "scripts/skeleton.sh"
+configure_php_env() {
+    clever env set --alias "$ALIAS" CC_PHP_VERSION        8.2                    >/dev/null 2>&1
+    clever env set --alias "$ALIAS" CC_PHP_MEMORY_LIMIT   512M                   >/dev/null 2>&1
+    clever env set --alias "$ALIAS" CC_PHP_EXTENSIONS     apcu                   >/dev/null 2>&1
+    clever env set --alias "$ALIAS" CC_WEBROOT            /                      >/dev/null 2>&1
+    clever env set --alias "$ALIAS" CC_POST_BUILD_HOOK    "scripts/install.sh"   >/dev/null 2>&1
+    clever env set --alias "$ALIAS" CC_PRE_RUN_HOOK       "scripts/run.sh"       >/dev/null 2>&1
+    clever env set --alias "$ALIAS" CC_RUN_SUCCEEDED_HOOK "scripts/skeleton.sh"  >/dev/null 2>&1
+}
+if $HAS_GUM; then
+    gum spin --spinner dot --title "Configuration des variables PHP..." -- bash -c "$(declare -f configure_php_env); ALIAS='$ALIAS' configure_php_env"
+else
+    configure_php_env
+fi
 success "Application PHP créée — domaine : $NEXTCLOUD_DOMAIN"
 
 section "Création des addons"
@@ -325,9 +449,9 @@ REDIS_HOST_VAL=$(extract_env "REDIS_HOST"     "$REDIS_ENV")
 REDIS_PORT_VAL=$(extract_env "REDIS_PORT"     "$REDIS_ENV" | tr -dc '0-9')
 REDIS_PASS_VAL=$(extract_env "REDIS_PASSWORD" "$REDIS_ENV")
 [ -z "$REDIS_HOST_VAL" ] && error "REDIS_HOST introuvable."
-clever env set --alias "$ALIAS" REDIS_HOST     "$REDIS_HOST_VAL"
-clever env set --alias "$ALIAS" REDIS_PORT     "$REDIS_PORT_VAL"
-clever env set --alias "$ALIAS" REDIS_PASSWORD "$REDIS_PASS_VAL"
+clever env set --alias "$ALIAS" REDIS_HOST     "$REDIS_HOST_VAL" >/dev/null 2>&1
+clever env set --alias "$ALIAS" REDIS_PORT     "$REDIS_PORT_VAL" >/dev/null 2>&1
+clever env set --alias "$ALIAS" REDIS_PASSWORD "$REDIS_PASS_VAL" >/dev/null 2>&1
 success "Redis créé ($REDIS_PLAN)"
 
 # Cellar S3
@@ -343,16 +467,16 @@ CELLAR_KEY=$(extract_env    "CELLAR_ADDON_KEY_ID"     "$CELLAR_ENV")
 CELLAR_SECRET=$(extract_env "CELLAR_ADDON_KEY_SECRET" "$CELLAR_ENV")
 CELLAR_HOST=$(extract_env   "CELLAR_ADDON_HOST"       "$CELLAR_ENV")
 [ -z "$CELLAR_KEY" ] && error "CELLAR_ADDON_KEY_ID introuvable."
-clever env set --alias "$ALIAS" CELLAR_ADDON_KEY_ID     "$CELLAR_KEY"
-clever env set --alias "$ALIAS" CELLAR_ADDON_KEY_SECRET "$CELLAR_SECRET"
-clever env set --alias "$ALIAS" CELLAR_ADDON_HOST       "$CELLAR_HOST"
-clever env set --alias "$ALIAS" CELLAR_BUCKET_NAME      "$CELLAR_BUCKET_NAME"
+clever env set --alias "$ALIAS" CELLAR_ADDON_KEY_ID     "$CELLAR_KEY"         >/dev/null 2>&1
+clever env set --alias "$ALIAS" CELLAR_ADDON_KEY_SECRET "$CELLAR_SECRET"      >/dev/null 2>&1
+clever env set --alias "$ALIAS" CELLAR_ADDON_HOST       "$CELLAR_HOST"        >/dev/null 2>&1
+clever env set --alias "$ALIAS" CELLAR_BUCKET_NAME      "$CELLAR_BUCKET_NAME" >/dev/null 2>&1
 success "Cellar S3 créé (stockage fichiers)"
 
 # Variables Nextcloud
-clever env set --alias "$ALIAS" NEXTCLOUD_DOMAIN         "$NEXTCLOUD_DOMAIN"
-clever env set --alias "$ALIAS" NEXTCLOUD_ADMIN_USER     "$NEXTCLOUD_ADMIN_USER"
-clever env set --alias "$ALIAS" NEXTCLOUD_ADMIN_PASSWORD "$NEXTCLOUD_ADMIN_PASSWORD"
+clever env set --alias "$ALIAS" NEXTCLOUD_DOMAIN         "$NEXTCLOUD_DOMAIN"         >/dev/null 2>&1
+clever env set --alias "$ALIAS" NEXTCLOUD_ADMIN_USER     "$NEXTCLOUD_ADMIN_USER"     >/dev/null 2>&1
+clever env set --alias "$ALIAS" NEXTCLOUD_ADMIN_PASSWORD "$NEXTCLOUD_ADMIN_PASSWORD" >/dev/null 2>&1
 success "Variables Nextcloud configurées."
 
 # Domaine personnalisé
@@ -397,8 +521,8 @@ if [ "$ENABLE_NGP" = "true" ]; then
         clever ng link "$REDIS_REAL_ID" "$NGP_NAME_CACHE" $ORG_FLAG 2>&1 | grep -E "✓|Member" || true
         success "NGP cache '${NGP_NAME_CACHE}' créé — app + Redis"
 
-        clever env set --alias "$ALIAS" CC_NGP_DB_NAME    "$NGP_NAME_DB"
-        clever env set --alias "$ALIAS" CC_NGP_CACHE_NAME "$NGP_NAME_CACHE"
+        clever env set --alias "$ALIAS" CC_NGP_DB_NAME    "$NGP_NAME_DB"    >/dev/null 2>&1
+        clever env set --alias "$ALIAS" CC_NGP_CACHE_NAME "$NGP_NAME_CACHE" >/dev/null 2>&1
 
         echo -e "  ${DIM}PostgreSQL et Redis sont dans des réseaux distincts — pas de communication possible entre eux${NC}"
         echo -e "  ${DIM}Tunnels WireGuard disponibles via DNS privés (*.cc-ng.cloud)${NC}"
@@ -423,22 +547,30 @@ fi
 info "Envoi du code source..."
 clever deploy --alias "$ALIAS" --force
 
-trap - ERR
+trap - ERR INT TERM
 
 # =============================================================================
 # SUCCÈS
 # =============================================================================
-echo ""
-echo -e "${BOLD}${GREEN}╔══════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}${GREEN}║            Déploiement réussi !           ║${NC}"
-echo -e "${BOLD}${GREEN}╚══════════════════════════════════════════╝${NC}"
-echo ""
-echo -e "  ${DIM}URL    ${NC}  ${BOLD}${GREEN}https://$NEXTCLOUD_DOMAIN${NC}"
-echo -e "  ${DIM}Admin  ${NC}  ${BOLD}$NEXTCLOUD_ADMIN_USER${NC}"
-echo -e "  ${DIM}Logs   ${NC}  clever logs --alias $ALIAS"
-if [ "$ENABLE_NGP" = "true" ]; then
-    echo -e "  ${DIM}NGP db   ${NC}  clever ng get $NGP_NAME_DB $ORG_FLAG"
-    echo -e "  ${DIM}NGP cache${NC}  clever ng get $NGP_NAME_CACHE $ORG_FLAG"
+banner "Déploiement réussi !" 46
+
+if $HAS_GUM; then
+    NGP_INFO=""
+    if [ "$ENABLE_NGP" = "true" ]; then
+        NGP_INFO=$(printf '\nNGP db           clever ng get %s %s\nNGP cache        clever ng get %s %s' \
+            "$NGP_NAME_DB" "$ORG_FLAG" "$NGP_NAME_CACHE" "$ORG_FLAG")
+    fi
+    gum style --border rounded --padding "1 2" --margin "0 2" --border-foreground 46 \
+"$(printf 'URL              https://%s\nAdmin            %s\nLogs             clever logs --alias %s%s' \
+        "$NEXTCLOUD_DOMAIN" "$NEXTCLOUD_ADMIN_USER" "$ALIAS" "$NGP_INFO")"
+else
+    echo -e "  ${DIM}URL    ${NC}  ${BOLD}${GREEN}https://$NEXTCLOUD_DOMAIN${NC}"
+    echo -e "  ${DIM}Admin  ${NC}  ${BOLD}$NEXTCLOUD_ADMIN_USER${NC}"
+    echo -e "  ${DIM}Logs   ${NC}  clever logs --alias $ALIAS"
+    if [ "$ENABLE_NGP" = "true" ]; then
+        echo -e "  ${DIM}NGP db   ${NC}  clever ng get $NGP_NAME_DB $ORG_FLAG"
+        echo -e "  ${DIM}NGP cache${NC}  clever ng get $NGP_NAME_CACHE $ORG_FLAG"
+    fi
 fi
 echo ""
 warn "Premier démarrage : 2 à 5 minutes (installation Nextcloud)."
